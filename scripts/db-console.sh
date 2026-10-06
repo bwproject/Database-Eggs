@@ -119,9 +119,13 @@ db_console_handle(){
             IFS= read -r -s upass <&"$fd" || return 0
             printf '\n'
           fi
-          _db_split_user "$uname" || { echo "Invalid user name (allowed: letters, digits, _ . \$)."; return 0; }
+          _db_split_user "$uname" || { echo "Invalid user name or host (allowed: letters, digits, _ . \$ - %)"; return 0; }
           uname="$_db_user"; local host="$_db_host"
           [ -n "$udb" ] || udb="$DB_NAME"
+          if [ -n "$udb" ] && ! [[ "$udb" =~ ^[A-Za-z0-9_.$-]+$ ]]; then
+            echo "Invalid database name '${udb}' (allowed: letters, digits, _ . \$ -)."
+            return 0
+          fi
           c=$(_dbcli)
           local esc_name esc_host esc_pass q esc_db
           esc_name="$(_db_esc "$uname")"; esc_host="$(_db_esc "$host")"; esc_pass="$(_db_esc "$upass")"
