@@ -323,7 +323,7 @@ pf_users_reconcile_mysql() { # pf_users_reconcile_mysql <client-bin>
             # Rotate EVERY root account (localhost AND 127.0.0.1) and drop any
             # legacy remote root - patching only localhost leaves the TCP
             # account stale and every later statement fails its auth.
-            if "${client}" --protocol=tcp -h 127.0.0.1 -P "${SERVER_PORT:-3306}" -u root -p"${stored_root}" -N -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${qrp}'; ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${qrp}'; DROP USER IF EXISTS 'root'@'%'; FLUSH PRIVILEGES;" >/dev/null 2>&1; then
+            if "${client}" --protocol=tcp -h 127.0.0.1 -P "${SERVER_PORT:-3306}" -u root -p"${stored_root}" -N -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${qrp}'; CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${qrp}'; ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${qrp}'; CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${qrp}'; ALTER USER 'root'@'%' IDENTIFIED BY '${qrp}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >/dev/null 2>&1; then
                 pf_users_store_root "${rootpw}"
                 ok "Root password synchronized with the DB_ROOT_PASSWORD startup variable."
                 # Rotation changed the credential MYSQL_AUTH was built with;
@@ -385,14 +385,20 @@ __MES_PASSWORD_SQL
         fi
     fi
 
-    # root is deliberately local-only. Remove root@% created by older egg
-    # versions, and drop stale proxies_priv rows so --skip-name-resolve
-    # stops logging "ignored" warnings on every start.
-    "${client}" "${MYSQL_AUTH[@]}" 2>/dev/null <<__ROOT_LOCAL_ONLY_SQL || true
-DROP USER IF EXISTS 'root'@'%';
-DELETE FROM mysql.proxies_priv WHERE Host <> 'localhost' AND Host <> '127.0.0.1';
+    # root is available locally and remotely. Keep the startup password on
+    # localhost, 127.0.0.1 and % so TCP clients can use remote root access.
+    local root_qpw
+    root_qpw=$(_pf_sql_quote "${rootpw}")
+    "${client}" "${MYSQL_AUTH[@]}" 2>/dev/null <<__ROOT_REMOTE_SQL || true
+CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '${root_qpw}';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_qpw}';
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${root_qpw}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${root_qpw}';
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${root_qpw}';
+ALTER USER 'root'@'%' IDENTIFIED BY '${root_qpw}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
-__ROOT_LOCAL_ONLY_SQL
+__ROOT_REMOTE_SQL
 
     local u pw udb qpw
     if [ "${PF_USERS_MODE:-legacy}" = "multi" ]; then
