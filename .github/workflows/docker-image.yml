@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: potenfyr-studios/database-eggs
+  IMAGE_NAME: bwproject/database-eggs
 
 permissions:
   contents: read
@@ -92,26 +92,10 @@ jobs:
           build-args: |
             RUNTIME_VARIANT=all
           push: ${{ github.event_name != 'pull_request' }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ matrix.slug }}-${{ github.sha }}
           cache-from: type=gha,scope=build-${{ matrix.slug }}
           cache-to: type=gha,scope=build-${{ matrix.slug }},mode=max
 
-      - name: Export digest
-        run: |
-          mkdir -p "${{ runner.temp }}/digests"
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ matrix.slug }}
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # Stitch the per-architecture digests into the published multi-arch tags.
-  # latest + sha-<short> always; the git tag itself on v* builds.
   merge:
     name: Merge manifest & publish tags
     needs: build
@@ -122,13 +106,6 @@ jobs:
       packages: write
 
     steps:
-      - name: Download per-arch digests
-        uses: actions/download-artifact@v4
-        with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-*
-          merge-multiple: true
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -151,31 +128,22 @@ jobs:
           echo "tags=${TAGS}" >> "${GITHUB_OUTPUT}"
 
       - name: Merge manifest lists and push tags
-        working-directory: ${{ runner.temp }}/digests
         run: |
           set -euo pipefail
-          ARGS=""
-          IFS=',' read -ra TAG_LIST <<< "${{ steps.tags.outputs.tags }}"
-          for t in "${TAG_LIST[@]}"; do ARGS="${ARGS} --tag ${t}"; done
-          # shellcheck disable=SC2046
-          docker buildx imagetools create ${ARGS} \
-            $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          SOURCES=""
+          for arch in amd64 arm64 armv7 s390x ppc64le riscv64; do
+            SOURCES="$SOURCES ${IMAGE}:build-${arch}-${GITHUB_SHA}"
+          done
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:sha-${GITHUB_SHA::7}" \
+            $SOURCES
           echo "Published multi-arch image:"
-          docker buildx imagetools inspect "${TAG_LIST[0]}"
+          docker buildx imagetools inspect "${IMAGE}:latest"
 
-  registry-hygiene:
-    name: Clean stale package versions
-    needs: merge
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
+      - name: Verify published manifest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:latest"
 
-    steps:
-      - name: Remove old untagged container versions
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: database-eggs
-          package-type: container
-          min-versions-to-keep: 5
-          delete-only-untagged-versions: true
