@@ -701,6 +701,8 @@ pf_mariadb_restore_dump() {
     if [ "${restore_ok}" -eq 1 ] && { [ "${restore_force}" = "1" ] || [ "${errors}" -eq 0 ]; }; then
         printf '%s\n' "${hash}" > "${marker}" 2>/dev/null || true
         chmod 600 "${marker}" 2>/dev/null || true
+        PF_MARIADB_DUMP_RESTORED=1
+        export PF_MARIADB_DUMP_RESTORED
         ok "Database dump restored successfully: $(basename "${dump_file}")"
         if [ "${restore_force}" = "1" ] && [ "${errors}" -gt 0 ]; then
             warn "Database dump restored with ${errors} SQL error(s); see ${restore_log}."
@@ -852,30 +854,30 @@ start_mariadb_mysql() {
         fi
     fi
 
-    # Upgrade the target server's own system tables before restoring any dump.
-    # A logical dump filter cannot fix an OLD PHYSICAL datadir: for example,
-    # MariaDB 10.3's mysql.column_stats can remain on disk when the daemon is
-    # replaced by MariaDB 13.x. MariaDB documents mariadb-upgrade/mysql_upgrade
-    # as the step that updates system tables after a version change.
-    #
-    # Run this after root authentication is known to work, so the upgrade tool
-    # can repair mysql.* before the restore touches application data.
-    if [ "${DB_AUTO_UPGRADE:-1}" = "1" ]; then
+    # Restore the optional dump first. The system-table upgrade is deliberately
+    # NOT run on every startup: it is only needed when a dump was actually
+    # restored during this boot. pf_mariadb_restore_dump sets
+    # PF_MARIADB_DUMP_RESTORED=1 only after a successful import.
+    PF_MARIADB_DUMP_RESTORED=0
+    pf_mariadb_restore_dump "${client_bin}"
+
+    # Only after a successful dump restore, check/upgrade MariaDB's own
+    # system tables. Normal restarts skip this completely.
+    if [ "${PF_MARIADB_DUMP_RESTORED:-0}" = "1" ] && [ "${DB_AUTO_UPGRADE:-1}" = "1" ]; then
         local upgrade_bin=""
         upgrade_bin=$(find_mariadb_bin "mariadb-upgrade" "mysql_upgrade" 2>/dev/null || true)
         if [ -n "${upgrade_bin}" ] && [ -x "${upgrade_bin}" ]; then
             local upgrade_log="${SERVER_DIR}/logs/mariadb-upgrade.log"
-            log "Checking/upgrading MariaDB system tables for the running server..."
+            log "Dump was restored successfully; checking/upgrading MariaDB system tables..."
             log "MariaDB upgrade tool: ${upgrade_bin}"
             log "MariaDB upgrade log: ${upgrade_log}"
-            log "Starting system-table check. This can take a while on an existing datadir..."
+            log "Starting system-table check after dump restore..."
             : > "${upgrade_log}" 2>/dev/null || true
             if "${upgrade_bin}" \
                 --protocol=tcp -h 127.0.0.1 -P "${SERVER_PORT:-3306}" \
                 -u root -p"${DB_ROOT_PASSWORD:-}" \
                 --force 2>&1 | tee -a "${upgrade_log}"; then
-                ok "MariaDB system-table upgrade completed."
-                log "System-table upgrade finished successfully; continuing to dump restore/account reconciliation."
+                ok "MariaDB system-table upgrade completed after dump restore."
             else
                 local upgrade_rc=${PIPESTATUS[0]:-1}
                 warn "MariaDB system-table upgrade reported an error (exit code ${upgrade_rc}); see ${upgrade_log}."
@@ -885,13 +887,11 @@ start_mariadb_mysql() {
         else
             warn "mariadb-upgrade/mysql_upgrade was not found; old mysql.* system tables cannot be upgraded automatically."
         fi
+    elif [ "${PF_MARIADB_DUMP_RESTORED:-0}" != "1" ]; then
+        log "No dump restored on this boot; skipping MariaDB system-table check."
     else
         log "Automatic MariaDB system-table upgrade disabled (DB_AUTO_UPGRADE=0)."
     fi
-
-    # Restore the optional dump first so account reconciliation re-applies
-    # grants after any DROP DATABASE inside the dump (RESTORE_DUMP=1).
-    pf_mariadb_restore_dump "${client_bin}"
 
     # Multi-user account reconciliation (idempotent, retries while daemon warms up)
     if command -v pf_users_reconcile_mysql >/dev/null 2>&1; then
