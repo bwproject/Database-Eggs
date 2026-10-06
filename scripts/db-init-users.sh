@@ -367,6 +367,22 @@ __LEGACY_SQL
         else
             warn "Could not ensure remote database access for ${DB_USER}."
         fi
+
+        # Only the special legacy account "mes" is allowed to receive a
+        # startup password change. Every other application account keeps
+        # the password restored from the dump / stored in .db-users.
+        if [ "${DB_USER}" = "mes" ]; then
+            if "${client}" "${MYSQL_AUTH[@]}" 2>/dev/null <<__MES_PASSWORD_SQL
+ALTER USER 'mes'@'%' IDENTIFIED BY '${legacy_qpw}';
+ALTER USER 'mes'@'localhost' IDENTIFIED BY '${legacy_qpw}';
+FLUSH PRIVILEGES;
+__MES_PASSWORD_SQL
+            then
+                log "Startup password synchronized for mes@% and mes@localhost."
+            else
+                warn "Could not synchronize startup password for mes."
+            fi
+        fi
     fi
 
     # root is deliberately local-only. Remove root@% created by older egg
