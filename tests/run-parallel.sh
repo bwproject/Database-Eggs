@@ -6,12 +6,14 @@
 #    tests/run-parallel.sh                # fast mode (default)
 #    tests/run-parallel.sh all            # everything
 #    tests/run-parallel.sh <suite>...     # any of: syntax versions smoke
-#                                         #         lifecycle users matrix
+#                                         #         console lifecycle users
+#                                         #         matrix
 #
 #  Suites:
 #    syntax     bash -n over every shell script                 (seconds)
 #    versions   resolver / suggestion / arch unit tests         (seconds)
 #    smoke      supervisor lifecycle without Docker             (seconds)
+#    console    db-console unit tests (stubbed client)          (seconds)
 #    lifecycle  panel behavior suite (fast Redis test image)    (~1 min)
 #    users      multi-user engine (production image)            (~3 min)
 #    matrix     engine startup matrix, PARALLEL by default      (~5 min)
@@ -27,8 +29,8 @@ cd "$(dirname "$0")/.." || exit 1
 LOGDIR=$(mktemp -d)
 trap 'rm -rf "$LOGDIR"' EXIT
 
-SUITES_ALL=(syntax versions smoke lifecycle users matrix)
-SUITES_FAST=(syntax versions smoke)
+SUITES_ALL=(syntax versions smoke console lifecycle users matrix)
+SUITES_FAST=(syntax versions smoke console)
 
 requested=("$@")
 [ "${#requested[@]}" = "0" ] && requested=(fast)
@@ -39,7 +41,7 @@ case "${requested[0]}" in
 esac
 
 for s in "${selected[@]}"; do
-    case "${s}" in syntax|versions|smoke|lifecycle|users|matrix) ;; *)
+    case "${s}" in syntax|versions|smoke|console|lifecycle|users|matrix) ;; *)
         echo "Unknown suite '${s}'. Valid: ${SUITES_ALL[*]} fast all"; exit 2 ;;
     esac
 done
@@ -60,6 +62,7 @@ run_suite() {
         syntax)    run_syntax ;;
         versions)  bash tests/test-versions.sh ;;
         smoke)     bash tests/smoke-supervisor.sh ;;
+        console)   bash tests/test-db-console.sh ;;
         lifecycle) bash tests/panel-test.sh ;;
         users)     bash tests/test-users.sh ;;
         matrix)    PARALLEL="${PARALLEL:-1}" MAX_JOBS="${MAX_JOBS:-4}" \

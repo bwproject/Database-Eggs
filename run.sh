@@ -604,10 +604,16 @@ print_connection_guide() {
 # Optional DB management console. This is an additive layer; the original
 # engine startup/reconciliation flow remains unchanged.
 # ---------------------------------------------------------------------------
-if [ -f "${SERVER_DIR}/scripts/db-console.sh" ]; then
-    # shellcheck source=/dev/null
-    source "${SERVER_DIR}/scripts/db-console.sh" 2>/dev/null || true
-fi
+for _console_lib in "${BASH_SOURCE%/*}/scripts/db-console.sh" \
+                    "/usr/local/bin/db-console.sh" \
+                    "/tmp/.database-runtime/db-console.sh" \
+                    "${SERVER_DIR}/scripts/db-console.sh"; do
+    if [ -f "${_console_lib}" ]; then
+        # shellcheck source=/dev/null
+        source "${_console_lib}" 2>/dev/null && break || true
+    fi
+done
+unset _console_lib
 
 # ---------------------------------------------------------------------------
 # Central Process Supervisor & Console Stop Listener
@@ -831,11 +837,15 @@ supervise_daemon() {
                                 # Recognized DB management commands are handled by the
                                 # additive console layer. Everything else keeps the
                                 # original watcher behavior and is only logged.
-                                if declare -F db_console_handle >/dev/null 2>&1; then
-                                    if db_console_handle "${line}" 3; then
-                                        continue
-                                    fi
-                                fi
+                                case "${PROJECT_TYPE,,}" in
+                                    mariadb|mysql)
+                                        if declare -F db_console_handle >/dev/null 2>&1; then
+                                            if db_console_handle "${line}" 3; then
+                                                continue
+                                            fi
+                                        fi
+                                        ;;
+                                esac
                                 log "Console command '${line}' received. (To stop the database, use 'stop' or the Panel Stop button)."
                                 ;;
                         esac

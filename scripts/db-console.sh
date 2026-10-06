@@ -5,6 +5,28 @@ _dbcli(){
   command -v mariadb >/dev/null 2>&1 && echo mariadb || echo mysql
 }
 
+# Escape a value for use inside a single-quoted SQL string literal.
+_db_esc(){
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\'/\\\'}"
+  printf '%s' "$s"
+}
+
+# Accept "name" or "name@host" -> sets _db_user and _db_host (host defaults to %).
+_db_split_user(){
+  local spec="$1"
+  if [[ "$spec" == *@* ]]; then
+    _db_user="${spec%%@*}"
+    _db_host="${spec#*@}"
+  else
+    _db_user="$spec"
+    _db_host="%"
+  fi
+  [[ "$_db_user" =~ ^[A-Za-z0-9_.$]+$ ]] || return 1
+  [[ "$_db_host" =~ ^[A-Za-z0-9_.%-]+$ ]] || return 1
+}
+
 _db_sql_session(){
   local fd="${1:-3}" c="${2:-$(_dbcli)}"
   shift 2 || true
@@ -20,7 +42,7 @@ _db_sql_session(){
     [ -n "$line" ] || continue
 
     case "${line,,}" in
-      exit|quit|exit;|quit;)
+      exit|quit|'exit;'|'quit;'|EXIT|QUIT|'EXIT;'|'QUIT;')
         echo "Interactive console closed."
         return 0
         ;;
@@ -44,6 +66,10 @@ db_console_handle(){
     help)
       printf '%s\n' \
         'help' 'status' 'version' 'databases' 'users' \
+        'user create <name> <password> [database]' \
+        'user drop <name>[@host]' \
+        'user password <name>[@host] <password>' \
+        'grants <name>[@host]' \
         'dump' 'dump <database>' 'dump create [database]' \
         'restore <file>' 'dump restore <file>' \
         'sql <SQL>' 'sql' 'root' 'root <new_password>' \
@@ -70,6 +96,96 @@ db_console_handle(){
     users)
       c=$(_dbcli)
       MYSQL_PWD="$DB_ROOT_PASSWORD" "$c" --protocol=tcp -h 127.0.0.1 -P "$DB_PORT" -u root -e 'SELECT User,Host FROM mysql.user ORDER BY User,Host;'
+      ;;
+
+    # Account management. mysql.user is a read-only compatibility VIEW in
+    # MariaDB >= 10.4 (it projects mysql.global_priv), so accounts must be
+    # managed with CREATE/ALTER/DROP USER statements, not table edits.
+    user)
+      local sub="${rest%%[[:space:]]*}"
+      local tail="${rest#"$sub"}"
+      tail="${tail#${tail%%[![:space:]]*}}"
+      case "${sub,,}" in
+        create)
+          local uname="${tail%%[[:space:]]*}"
+          local after="${tail#"$uname"}"
+          after="${after#${after%%[![:space:]]*}}"
+          local upass="${after%%[[:space:]]*}"
+          local udb="${after#"$upass"}"
+          udb="${udb# }"
+          [ -n "$uname" ] || { echo "Usage: user create <name> <password> [database]"; return 0; }
+          if [ -z "$upass" ]; then
+            printf 'Password for %s: ' "$uname"
+            IFS= read -r -s upass <&"$fd" || return 0
+            printf '\n'
+          fi
+          _db_split_user "$uname" || { echo "Invalid user name (allowed: letters, digits, _ . \$)."; return 0; }
+          uname="$_db_user"; local host="$_db_host"
+          [ -n "$udb" ] || udb="$DB_NAME"
+          c=$(_dbcli)
+          local esc_name esc_host esc_pass q esc_db
+          esc_name="$(_db_esc "$uname")"; esc_host="$(_db_esc "$host")"; esc_pass="$(_db_esc "$upass")"
+          if [ -n "$udb" ]; then
+            esc_db="$(_db_esc "$udb")"
+            q="CREATE USER IF NOT EXISTS '${esc_name}'@'${esc_host}' IDENTIFIED BY '${esc_pass}'; GRANT ALL PRIVILEGES ON \`${esc_db}\`.* TO '${esc_name}'@'${esc_host}'; FLUSH PRIVILEGES;"
+          else
+            q="CREATE USER IF NOT EXISTS '${esc_name}'@'${esc_host}' IDENTIFIED BY '${esc_pass}'; GRANT ALL PRIVILEGES ON *.* TO '${esc_name}'@'${esc_host}' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+            echo "No database given (DB_NAME unset): granting privileges on *.*."
+          fi
+          if MYSQL_PWD="$DB_ROOT_PASSWORD" "$c" --protocol=tcp -h 127.0.0.1 -P "$DB_PORT" -u root -e "$q"; then
+            echo "User '${uname}'@'${host}' created on ${udb:-*.*}."
+          else
+            echo "Failed to create user '${uname}'@'${host}'."
+          fi
+          ;;
+        drop|remove|delete)
+          [ -n "$tail" ] || { echo "Usage: user drop <name>[@host]"; return 0; }
+          _db_split_user "$tail" || { echo "Invalid user specification."; return 0; }
+          c=$(_dbcli)
+          if MYSQL_PWD="$DB_ROOT_PASSWORD" "$c" --protocol=tcp -h 127.0.0.1 -P "$DB_PORT" -u root -e \
+            "DROP USER IF EXISTS '${_db_user}'@'${_db_host}'; FLUSH PRIVILEGES;"; then
+            echo "User '${_db_user}'@'${_db_host}' dropped."
+          else
+            echo "Failed to drop user '${_db_user}'@'${_db_host}'."
+          fi
+          ;;
+        password|passwd)
+          local uspec="${tail%%[[:space:]]*}"
+          local rest2="${tail#"$uspec"}"
+          rest2="${rest2#${rest2%%[![:space:]]*}}"
+          local npass="${rest2%%[[:space:]]*}"
+          [ -n "$uspec" ] || { echo "Usage: user password <name>[@host] <password>"; return 0; }
+          if [ -z "$npass" ]; then
+            printf 'New password for %s: ' "$uspec"
+            IFS= read -r -s npass <&"$fd" || return 0
+            printf '\nConfirm password: '
+            local npass2
+            IFS= read -r -s npass2 <&"$fd" || return 0
+            printf '\n'
+            [ "$npass" = "$npass2" ] || { echo 'Passwords do not match.'; return 0; }
+          fi
+          _db_split_user "$uspec" || { echo "Invalid user specification."; return 0; }
+          c=$(_dbcli)
+          if MYSQL_PWD="$DB_ROOT_PASSWORD" "$c" --protocol=tcp -h 127.0.0.1 -P "$DB_PORT" -u root -e \
+            "ALTER USER '${_db_user}'@'${_db_host}' IDENTIFIED BY '$(_db_esc "$npass")'; FLUSH PRIVILEGES;"; then
+            echo "Password changed for '${_db_user}'@'${_db_host}'."
+          else
+            echo "Failed to change password for '${_db_user}'@'${_db_host}' (user may not exist)."
+          fi
+          ;;
+        *)
+          echo "Usage: user create <name> <password> [database] | user drop <name>[@host] | user password <name>[@host] <password>"
+          ;;
+      esac
+      ;;
+
+    grants)
+      [ -n "$rest" ] || { echo "Usage: grants <name>[@host]   (see 'users' for the account list)"; return 0; }
+      _db_split_user "$rest" || { echo "Invalid user specification."; return 0; }
+      c=$(_dbcli)
+      MYSQL_PWD="$DB_ROOT_PASSWORD" "$c" --protocol=tcp -h 127.0.0.1 -P "$DB_PORT" -u root -e \
+        "SHOW GRANTS FOR '${_db_user}'@'${_db_host}';" \
+        || echo "No grants found for '${_db_user}'@'${_db_host}' (account may not exist)."
       ;;
 
     dump)

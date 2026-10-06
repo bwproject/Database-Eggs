@@ -79,3 +79,8 @@ jobs:
         run: |
           chmod +x tests/test-restore-dump.sh
           ./tests/test-restore-dump.sh
+
+      - name: DB console unit tests (stubbed client)
+        run: |
+          chmod +x tests/test-db-console.sh
+          ./tests/test-db-console.sh
