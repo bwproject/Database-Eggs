@@ -1,178 +1,31 @@
-# =============================================================================
-#  PotenFYR Studios - Multi-Variant Database Container Runtime
-#  Supports Multi-Variant Dedicated Lean Builds & Universal Multi-Database Images:
-#  - RUNTIME_VARIANT=all          (Universal Multi-Database)
-#  - RUNTIME_VARIANT=mysql        (MariaDB / MySQL Server & Client)
-#  - RUNTIME_VARIANT=postgres     (Ubuntu PostgreSQL Server, Contrib & Client)
-#  - RUNTIME_VARIANT=mongodb      (Common base; MongoDB installed at runtime)
-#  - RUNTIME_VARIANT=redis        (Redis, Memcached; best-effort Valkey build)
-#  - RUNTIME_VARIANT=meilisearch  (Meilisearch Search Engine)
-#  - RUNTIME_VARIANT=clickhouse   (ClickHouse Analytical Server & Client)
-#  - RUNTIME_VARIANT=sqlite       (SQLite3 + Litestream Replication)
-# =============================================================================
+# ProjectBW Multi-Database image with phpMyAdmin
+# Keeps the original PotenFYR database runtime and adds PHP CLI + phpMyAdmin.
 
-FROM ubuntu:22.04
+FROM ghcr.io/potenfyr-studios/database-eggs:latest
 
-LABEL author="PotenFYR Studios" maintainer="support@potenfyr.in" \
-      org.opencontainers.image.title="PotenFYR Multi-Variant Database Runtime" \
-      org.opencontainers.image.description="Dedicated lean & universal database container runtimes with companion injection for Pterodactyl, Pelican, Feather, Wisp, and Docker." \
-      org.opencontainers.image.source="https://github.com/PotenFYR-Studios/Database-Eggs" \
-      org.opencontainers.image.licenses="Apache-2.0 WITH Commons-Clause-1.0"
+USER root
 
-ARG TARGETPLATFORM
-ARG TARGETARCH
-ARG RUNTIME_VARIANT=all
+ARG PHPMYADMIN_VERSION=5.2.3
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8 \
-    LANGUAGE=en_US:en \
-    RUNTIME_VARIANT=${RUNTIME_VARIANT} \
-    PATH="/home/container/bin:/home/container/.runtimes/bin:/usr/lib/postgresql/18/bin:/usr/lib/postgresql/17/bin:/usr/lib/postgresql/16/bin:/usr/lib/postgresql/15/bin:/usr/lib/postgresql/14/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
-
-# Slim pull size at the dpkg layer: never unpack man pages, HTML docs,
-# lintian metadata or non-English locales (copyright files, English and the
-# locale alias stay). Applied before every install below; no runtime impact.
-RUN printf '%s\n' \
-    'path-exclude=/usr/share/doc/*' \
-    'path-include=/usr/share/doc/*/copyright' \
-    'path-exclude=/usr/share/man/*' \
-    'path-exclude=/usr/share/info/*' \
-    'path-exclude=/usr/share/lintian/*' \
-    'path-exclude=/usr/share/locale/*' \
-    'path-include=/usr/share/locale/en*' \
-    'path-include=/usr/share/locale/locale.alias' \
-    > /etc/dpkg/dpkg.cfg.d/01-potenfyr-slim
-
-# Install common system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        wget \
-        jq \
-        unzip \
-        tar \
-        xz-utils \
-        tzdata \
-        iproute2 \
-        procps \
-        net-tools \
-        locales \
-        openssl \
-        pwgen \
-        gosu \
-        tini \
-        sqlite3 \
+        php-cli \
+        php-mysql \
+        php-mbstring \
+        php-zip \
+        php-gd \
+        php-curl \
+        php-xml \
+        php-bz2 \
     && rm -rf /var/lib/apt/lists/* \
-    && locale-gen en_US.UTF-8 \
-    && update-locale LANG=en_US.UTF-8
+    && mkdir -p /opt/phpmyadmin \
+    && curl -fsSL --retry 3 --max-time 300 \
+        "https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.tar.gz" \
+        | tar -xz --strip-components=1 -C /opt/phpmyadmin \
+    && mkdir -p /opt/phpmyadmin/tmp \
+    && chown -R 988:988 /opt/phpmyadmin \
+    && chmod 700 /opt/phpmyadmin/tmp
 
-# Conditional Engine Installation based on RUNTIME_VARIANT
-RUN apt-get update && \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "mysql" ]; then \
-        apt-get install -y --no-install-recommends mariadb-server mariadb-client; \
-    fi && \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "postgres" ]; then \
-        apt-get install -y --no-install-recommends postgresql postgresql-contrib postgresql-client && \
-        for bin in /usr/lib/postgresql/*/bin/*; do [ -f "$bin" ] && ln -sf "$bin" /usr/local/bin/ 2>/dev/null || true; done; \
-    fi && \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "redis" ]; then \
-        apt-get install -y --no-install-recommends redis-server redis-tools memcached; \
-    fi && \
-    rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/lib/mysql \
-    && rm -rf /var/lib/postgresql/*
-
-# Standalone Engine Binaries (Universal & Dedicated Variants)
-# Target mapping is not an engine compatibility guarantee. Standalone downloads
-# below are best-effort and upstream asset availability varies by engine/version.
-# Legacy Docker builders do not populate TARGETARCH; use the base image's dpkg
-# architecture in that case (never silently select amd64 on another CPU).
-RUN arch_type="amd64"; arch_alt="x86_64"; arch_gnu="x86_64-unknown-linux-gnu"; \
-    TARGETARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    case "${TARGETARCH}" in \
-        amd64) ;; \
-        arm64) \
-            arch_type="arm64"; arch_alt="aarch64"; arch_gnu="aarch64-unknown-linux-gnu"; \
-            ;; \
-        arm|armhf) \
-            arch_type="arm"; arch_alt="armv7l"; arch_gnu="arm-unknown-linux-gnueabihf"; \
-            ;; \
-        s390x) \
-            arch_type="s390x"; arch_alt="s390x"; arch_gnu="s390x-unknown-linux-gnu"; \
-            ;; \
-        ppc64le|ppc64el) \
-            arch_type="ppc64le"; arch_alt="ppc64le"; arch_gnu="powerpc64le-unknown-linux-gnu"; \
-            ;; \
-        riscv64) \
-            arch_type="riscv64"; arch_alt="riscv64"; arch_gnu="riscv64-unknown-linux-gnu"; \
-            ;; \
-        *) printf 'Unsupported build architecture: %s\n' "${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    meili_arch="${arch_type}"; [ "${arch_type}" != "arm64" ] || meili_arch="aarch64"; \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "meilisearch" ]; then \
-        for i in 1 2 3; do \
-            curl -fsSL -A "Mozilla/5.0 PotenFYR-Build" -o /usr/local/bin/meilisearch "https://github.com/meilisearch/meilisearch/releases/download/v1.53.1/meilisearch-linux-${meili_arch}" && [ -s /usr/local/bin/meilisearch ] && break || sleep 3; \
-        done; \
-        chmod +x /usr/local/bin/meilisearch 2>/dev/null || true; \
-    fi; \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "clickhouse" ]; then \
-        curl -fsSL https://clickhouse.com/ | sh && (mv clickhouse /usr/local/bin/clickhouse 2>/dev/null || true) || true; \
-    fi; \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "sqlite" ]; then \
-        curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-${arch_type}.tar.gz" 2>/dev/null | tar -xz -C /usr/local/bin/ 2>/dev/null || true; \
-    fi; \
-    if [ "${RUNTIME_VARIANT}" = "all" ]; then \
-        curl -fsSL https://install.surrealdb.com | sh && (cp -f /root/.surrealdb/surreal /usr/local/bin/surreal 2>/dev/null || cp -f ~/.surrealdb/surreal /usr/local/bin/surreal 2>/dev/null || true) || true; \
-        curl -fsSL -o /usr/local/bin/minio "https://dl.min.io/server/minio/release/linux-${arch_type}/minio" || true; \
-        curl -fsSL -o /tmp/pb.zip "https://github.com/pocketbase/pocketbase/releases/download/v0.25.0/pocketbase_0.25.0_linux_${arch_type}.zip" && unzip -q /tmp/pb.zip -d /tmp/pb && mv /tmp/pb/pocketbase /usr/local/bin/pocketbase && rm -rf /tmp/pb* || true; \
-        curl -fsSL "https://github.com/qdrant/qdrant/releases/download/v1.12.1/qdrant-${arch_gnu}.tar.gz" 2>/dev/null | tar -xz -C /usr/local/bin/ 2>/dev/null || true; \
-    fi; \
-    if [ "${RUNTIME_VARIANT}" = "all" ] || [ "${RUNTIME_VARIANT}" = "redis" ]; then \
-        if [ "${TARGETARCH}" = "amd64" ] || [ "${TARGETARCH}" = "arm64" ]; then \
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-                build-essential pkg-config libevent-dev \
-                && curl -fsSL -o /tmp/valkey.tar.gz "https://github.com/valkey-io/valkey/archive/refs/tags/8.1.3.tar.gz" \
-                && tar -xzf /tmp/valkey.tar.gz -C /tmp \
-                && make -C /tmp/valkey-8.1.3 MALLOC=libc valkey-server valkey-cli >/dev/null 2>&1 \
-                && cp -f /tmp/valkey-8.1.3/src/valkey-server /usr/local/bin/ \
-                && cp -f /tmp/valkey-8.1.3/src/valkey-cli /usr/local/bin/ \
-                && rm -rf /tmp/valkey* \
-                && curl -fsSL -o /tmp/redis-stable.tar.gz "https://download.redis.io/redis-stable.tar.gz" \
-                && tar -xzf /tmp/redis-stable.tar.gz -C /tmp \
-                && make -C /tmp/redis-stable MALLOC=libc -j"$(nproc 2>/dev/null || echo 2)" redis-server redis-cli >/dev/null 2>&1 \
-                && cp -f /tmp/redis-stable/src/redis-server /usr/local/bin/ \
-                && cp -f /tmp/redis-stable/src/redis-cli /usr/local/bin/ \
-                && rm -rf /tmp/redis-stable* \
-                && rm -rf /var/lib/apt/lists/* || true; \
-        fi; \
-    fi; \
-    rm -rf /*.deb /root/*.deb /root/.surrealdb /root/.cache /tmp/* /var/tmp/* 2>/dev/null || true; \
-    chmod +x /usr/local/bin/* 2>/dev/null || true
-
-# Create container users and configure permissions for dynamic UID mapping (OpenShift/Pterodactyl/Docker)
-RUN groupadd -g 988 container 2>/dev/null || true \
-    && useradd -m -u 988 -g container -s /bin/bash container 2>/dev/null || true \
-    && groupadd -g 999 dockeruser 2>/dev/null || true \
-    && useradd -m -u 999 -g 988 -s /bin/bash ptdluser 2>/dev/null || true \
-    && groupadd -g 1000 standarduser 2>/dev/null || true \
-    && useradd -m -u 1000 -g 988 -s /bin/bash appuser 2>/dev/null || true \
-    && mkdir -p /home/container /mnt/server \
-    && chown -R container:container /home/container /mnt/server \
-    && chmod -R 777 /home/container /mnt/server \
-    && chmod 666 /etc/passwd /etc/group /etc/shadow 2>/dev/null || true
-
-# Copy entrypoint, launcher, and modular scripts
-COPY entrypoint.sh /entrypoint.sh
-COPY run.sh /usr/local/bin/run.sh
-COPY scripts/ /usr/local/bin/
-
-RUN sed -i 's/\r$//' /entrypoint.sh /usr/local/bin/run.sh /usr/local/bin/*.sh 2>/dev/null || true \
-    && chmod +x /entrypoint.sh /usr/local/bin/run.sh /usr/local/bin/*.sh 2>/dev/null || true
-
-USER container
-ENV USER=container HOME=/home/container PATH="/home/container/bin:/home/container/.runtimes/bin:${PATH}"
-WORKDIR /home/container
-
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
-CMD ["run.sh"]
+EXPOSE 8080

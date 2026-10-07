@@ -1128,6 +1128,111 @@ mysql_backup_scheduler() {
 
 mysql_backup_scheduler
 
+# -----------------------------------------------------------------------------
+# ProjectBW: phpMyAdmin web interface for MySQL/MariaDB
+# -----------------------------------------------------------------------------
+PHPMYADMIN_ENABLED="${PHPMYADMIN_ENABLED:-1}"
+PHPMYADMIN_PORT="${PHPMYADMIN_PORT:-8080}"
+PHPMYADMIN_HOST="${PHPMYADMIN_HOST:-0.0.0.0}"
+PHPMYADMIN_DB_HOST="${PHPMYADMIN_DB_HOST:-127.0.0.1}"
+PHPMYADMIN_DB_PORT="${PHPMYADMIN_DB_PORT:-${SERVER_PORT:-3306}}"
+PHPMYADMIN_DIR="${SERVER_DIR}/.phpmyadmin"
+PHPMYADMIN_LOG="${SERVER_DIR}/logs/phpmyadmin.log"
+PHPMYADMIN_PID_FILE="${SERVER_DIR}/run/phpmyadmin.pid"
+
+start_phpmyadmin() {
+    [ "${PHPMYADMIN_ENABLED}" = "1" ] || return 0
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
+
+    case "${PHPMYADMIN_PORT}" in
+        ''|*[!0-9]*) PHPMYADMIN_PORT=8080 ;;
+    esac
+    if [ "${PHPMYADMIN_PORT}" -lt 1024 ] || [ "${PHPMYADMIN_PORT}" -gt 65535 ]; then
+        warn "Некорректный PHPMYADMIN_PORT=${PHPMYADMIN_PORT}; используется 8080."
+        PHPMYADMIN_PORT=8080
+    fi
+
+    if ! command -v php >/dev/null 2>&1; then
+        warn "phpMyAdmin включён, но PHP CLI отсутствует в Docker-образе. Web-интерфейс не запущен."
+        return 1
+    fi
+    if [ ! -f "/opt/phpmyadmin/index.php" ]; then
+        warn "phpMyAdmin не найден в Docker-образе /opt/phpmyadmin."
+        return 1
+    fi
+
+    mkdir -p "${PHPMYADMIN_DIR}/tmp" "${SERVER_DIR}/run" "${SERVER_DIR}/logs" 2>/dev/null || true
+    chmod 700 "${PHPMYADMIN_DIR}" "${PHPMYADMIN_DIR}/tmp" 2>/dev/null || true
+
+    # Keep the application in the server volume so config/session data survive restarts.
+    if [ ! -f "${PHPMYADMIN_DIR}/index.php" ]; then
+        cp -a /opt/phpmyadmin/. "${PHPMYADMIN_DIR}/" 2>/dev/null || {
+            warn "Не удалось скопировать phpMyAdmin в ${PHPMYADMIN_DIR}."
+            return 1
+        }
+    fi
+    mkdir -p "${PHPMYADMIN_DIR}/tmp"
+
+    local cfg="${PHPMYADMIN_DIR}/config.inc.php"
+    if [ ! -f "${cfg}" ]; then
+        local secret
+        if command -v openssl >/dev/null 2>&1; then
+            secret=$(openssl rand -hex 32 2>/dev/null || true)
+        fi
+        [ -n "${secret}" ] || secret=$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+        [ "${#secret}" -ge 32 ] || secret=$(printf '%s-%s-%s' "${SERVER_DIR}" "${RANDOM}" "${PPID}" | sha256sum | cut -d' ' -f1)
+
+        cat > "${cfg}" <<PHP_CONFIG
+<?php
+$cfg['blowfish_secret'] = '${secret}';
+$i = 0;
+$i++;
+$cfg['Servers'][$i]['auth_type'] = 'cookie';
+$cfg['Servers'][$i]['host'] = '${PHPMYADMIN_DB_HOST}';
+$cfg['Servers'][$i]['port'] = ${PHPMYADMIN_DB_PORT};
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
+$cfg['TempDir'] = '${PHPMYADMIN_DIR}/tmp';
+PHP_CONFIG
+        chmod 600 "${cfg}" 2>/dev/null || true
+    fi
+
+    # Do not start a second copy if one is already listening on the configured port.
+    if [ -f "${PHPMYADMIN_PID_FILE}" ]; then
+        local old_pid
+        old_pid=$(cat "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true)
+        if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+            log "phpMyAdmin уже запущен: http://${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT}"
+            return 0
+        fi
+        rm -f "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    fi
+
+    log "Запуск phpMyAdmin: http://${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT} -> MySQL/MariaDB ${PHPMYADMIN_DB_HOST}:${PHPMYADMIN_DB_PORT}"
+    (
+        cd "${PHPMYADMIN_DIR}" || exit 1
+        exec php -d upload_max_filesize=256M -d post_max_size=256M \
+            -d max_execution_time=300 -d memory_limit=512M \
+            -S "${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT}" -t "${PHPMYADMIN_DIR}"
+    ) >>"${PHPMYADMIN_LOG}" 2>&1 &
+    local pma_pid=$!
+    echo "${pma_pid}" > "${PHPMYADMIN_PID_FILE}"
+    chmod 600 "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    export PHPMYADMIN_PID="${pma_pid}"
+
+    sleep 1
+    if kill -0 "${pma_pid}" 2>/dev/null; then
+        ok "phpMyAdmin запущен на порту ${PHPMYADMIN_PORT}. Добавьте этот порт как allocation в панели, если нужен внешний доступ."
+        return 0
+    fi
+
+    warn "phpMyAdmin не смог запуститься. Последние строки лога:"
+    tail -n 30 "${PHPMYADMIN_LOG}" 2>/dev/null || true
+    rm -f "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    return 1
+}
+
+start_phpmyadmin || true
+
 # --- Engine Dispatcher ------------------------------------------------------
 case "${PROJECT_TYPE}" in
     mariadb|mysql)

@@ -12,7 +12,7 @@
     "pid_limit"
   ],
   "docker_images": {
-    "Universal Multi-Database (All Engines)": "ghcr.io/potenfyr-studios/database-eggs:latest"
+    "ProjectBW Multi-Database + phpMyAdmin": "ghcr.io/bwproject/database-eggs:latest"
   },
   "file_denylist": [],
   "startup": "if [ -f /entrypoint.sh ]; then exec bash /entrypoint.sh; elif [ -f /usr/local/bin/entrypoint.sh ]; then exec bash /usr/local/bin/entrypoint.sh; elif [ -f ./entrypoint.sh ]; then exec bash ./entrypoint.sh; else echo \"[startup] Fetching remote entrypoint bootstrap...\"; (curl -fsSL --retry 3 https://raw.githubusercontent.com/PotenFYR-Studios/Database-Eggs/master/entrypoint.sh || wget -qO- https://raw.githubusercontent.com/PotenFYR-Studios/Database-Eggs/master/entrypoint.sh) | tr -d \"\\r\" | exec bash; fi",
@@ -398,6 +398,26 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|max:16",
+      "field_type": "text"
+    },
+    {
+      "name": "Включить phpMyAdmin",
+      "description": "1 = автоматически запускать встроенный web-интерфейс phpMyAdmin для MySQL/MariaDB. Для внешнего доступа добавьте дополнительную allocation/порт сервера в панели.",
+      "env_variable": "PHPMYADMIN_ENABLED",
+      "default_value": "1",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|boolean",
+      "field_type": "text"
+    },
+    {
+      "name": "Порт phpMyAdmin",
+      "description": "Внутренний HTTP-порт phpMyAdmin внутри контейнера. По умолчанию 8080. Этот порт также должен быть добавлен как дополнительный allocation/порт сервера в панели.",
+      "env_variable": "PHPMYADMIN_PORT",
+      "default_value": "8080",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|numeric|min:1024|max:65535",
       "field_type": "text"
     },
     {
