@@ -2,12 +2,12 @@
   "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
   "meta": {
     "version": "PTDL_v2",
-    "update_url": "https://raw.githubusercontent.com/PotenFYR-Studios/Database-Eggs/master/egg-database-multi.json"
+    "update_url": "https://raw.githubusercontent.com/bwproject/Database-Eggs/master/egg-database-multi.json"
   },
   "exported_at": "2026-09-20T00:00:00+00:00",
-  "name": "Multi Database",
+  "name": "Мульти-база данных",
   "author": "support@potenfyr.in",
-  "description": "One egg. Every database. Every version. Supports 55+ SQL, NoSQL, In-Memory, Vector, Time-Series, Search, Graph and Object-Storage engines. Versions install isolated inside the container on demand from startup variables ('latest' auto-resolves). Switching engine or major version never deletes previous data - instances are kept per version until you remove them manually.",
+  "description": "Универсальный egg для SQL, NoSQL, кэшей, поисковых, векторных, временных и других баз данных. Версии устанавливаются изолированно внутри контейнера. Поддерживаются восстановление дампов, Git-синхронизация и ежедневный бекап MySQL/MariaDB в отдельный GitHub-репозиторий.",
   "features": [
     "pid_limit"
   ],
@@ -31,8 +31,8 @@
   },
   "variables": [
     {
-      "name": "Database Type",
-      "description": "Engine to run (installed isolated inside the container on demand).\nSQL: mariadb, mysql, postgresql, cockroachdb, yugabytedb, tidb, dolt\nNoSQL: mongodb (mongo), ferretdb, arangodb, orientdb, ravendb, cassandra, aerospike, rethinkdb\nIn-Memory/KV: redis, valkey, keydb, dragonfly, memcached, etcd, nats, immudb, consul\nVector/Search: meilisearch, typesense, qdrant, elasticsearch, opensearch, solr, manticoresearch, milvus, weaviate, quickwit\nTime-Series/Storage: influxdb, clickhouse, victoriametrics, prometheus, questdb, seaweedfs, garage, minio, pocketbase, loki, sqlite\nGraph/Ledger/Events: neo4j, dgraph, surrealdb, kafka | Misc: sqld, custom\nVersions: latest, stable, beta, alpha, nightly, snapshot, a major (18), a series (11.4),\nan exact version (8.0.45) or a direct https URL. Invalid/nonexistent pins are refused\nwith a 'Did you mean ...?' list of the closest published versions.",
+      "name": "Тип базы данных",
+      "description": "Движок базы данных, который будет запущен. Поддерживаются MariaDB, MySQL, PostgreSQL, Redis, MongoDB, PostgreSQL и другие движки из универсального runtime.",
       "env_variable": "DATABASE_TYPE",
       "default_value": "mariadb",
       "user_viewable": true,
@@ -41,8 +41,8 @@
       "field_type": "text"
     },
     {
-      "name": "Database Version",
-      "description": "Version to run. 'latest' auto-resolves upstream newest. Series like 18 or 11.4 resolve to the latest patch automatically; full versions (8.0.45) are used as-is. Switching majors never deletes old data - a fresh data/<engine>/<version> instance is created and the old one is preserved.",
+      "name": "Версия базы данных",
+      "description": "Версия движка: latest, stable, beta, alpha, nightly, major, серия или точная версия. При смене версии старые данные не удаляются.",
       "env_variable": "DB_VERSION",
       "default_value": "latest",
       "user_viewable": true,
@@ -51,8 +51,8 @@
       "field_type": "text"
     },
     {
-      "name": "Strict Version Enforcement",
-      "description": "1 = refuse to start if the exact requested version cannot be provided (no silent downgrades). 0 = warn and fall back to best available binary.",
+      "name": "Строгая проверка версии",
+      "description": "1 = запуск запрещён, если запрошенную версию невозможно установить точно. 0 = разрешено использовать доступную версию с предупреждением.",
       "env_variable": "STRICT_VERSION",
       "default_value": "1",
       "user_viewable": true,
@@ -61,8 +61,8 @@
       "field_type": "text"
     },
     {
-      "name": "Database Name",
-      "description": "The default database/schema to create on startup.",
+      "name": "Имя базы данных",
+      "description": "Основная база или схема, создаваемая при запуске.",
       "env_variable": "DB_NAME",
       "default_value": "database",
       "user_viewable": true,
@@ -71,8 +71,8 @@
       "field_type": "text"
     },
     {
-      "name": "Database Usernames",
-      "description": "Comma-separated database users to create/manage (no limit; e.g. 'alice,bob,carol'). Each user owns their private database '<user>_db' with full rights and also gets access to the shared database below. Adding or removing names applies on the next start: new users are created, removed users are deleted with their credentials (their database is preserved). Invalid/reserved names are skipped with a warning. Leave empty for the legacy single user 'dbuser'.",
+      "name": "Пользователи базы данных",
+      "description": "Список пользователей через запятую. Для каждого пользователя создаётся отдельная база <user>_db и выдаются необходимые права.",
       "env_variable": "DB_USERNAMES",
       "default_value": "",
       "user_viewable": true,
@@ -81,8 +81,8 @@
       "field_type": "text"
     },
     {
-      "name": "Database User Passwords",
-      "description": "Comma-separated passwords positionally matched to Database Usernames (e.g. 'S3cretA,S3cretB'). An empty slot generates a fresh random password for that user. Passwords apply exactly once, at user creation: existing users' credentials are never changed by restarts or edits. Generated/stored passwords are recorded in .env and .db-users/credentials (mode 600).",
+      "name": "Пароли пользователей базы данных",
+      "description": "Пароли через запятую в том же порядке, что и DB_USERNAMES. Пустое значение создаёт случайный пароль. Пароли существующих пользователей не меняются при обычном перезапуске.",
       "env_variable": "DB_PASSWORDS",
       "default_value": "auto",
       "user_viewable": true,
@@ -91,8 +91,8 @@
       "field_type": "text"
     },
     {
-      "name": "Root / Admin / Master Password",
-      "description": "Password for Root, Superuser, Admin, or Master Key. Leave EMPTY (or 'auto') to auto-generate an ultra-strong random secret. If you set a password, it is used for the root account and rotates an existing root credential on the next start.",
+      "name": "Пароль root / администратора",
+      "description": "Пароль root, суперпользователя или администратора. Пустое значение или auto позволяет сгенерировать сильный случайный пароль.",
       "env_variable": "DB_ROOT_PASSWORD",
       "default_value": "",
       "user_viewable": true,
@@ -101,8 +101,8 @@
       "field_type": "text"
     },
     {
-      "name": "Auto Generate Strong Secrets",
-      "description": "1 = Automatically generate cryptographically secure 32-character random passwords if fields are empty or 'auto', and update startup environment variables.",
+      "name": "Автогенерация паролей",
+      "description": "1 = автоматически создавать криптографически стойкие пароли для пустых или auto-полей.",
       "env_variable": "AUTO_GENERATE_CREDENTIALS",
       "default_value": "1",
       "user_viewable": true,
@@ -111,8 +111,8 @@
       "field_type": "text"
     },
     {
-      "name": "Restore Database Dump",
-      "description": "1 = After MariaDB/MySQL starts, automatically restore the first SQL dump found in /home/container/dump. Supports .sql, .sql.gz, .sql.xz and .sql.zst. The same dump is restored only once per file checksum; replace the file or remove dump/.restored.sha256 to retry.",
+      "name": "Восстановление дампа базы данных",
+      "description": "1 = после запуска MariaDB/MySQL автоматически восстановить первый дамп из /home/container/dump. Поддерживаются .sql, .sql.gz, .sql.xz и .sql.zst.",
       "env_variable": "RESTORE_DUMP",
       "default_value": "0",
       "user_viewable": true,
@@ -121,8 +121,8 @@
       "field_type": "text"
     },
     {
-      "name": "Restore Dump Skip System Schemas",
-      "description": "1 = Skip old MariaDB/MySQL system schemas (mysql, performance_schema, information_schema) when restoring a dump; 0 = import them as well.",
+      "name": "Не восстанавливать системные схемы",
+      "description": "1 = пропускать mysql, performance_schema и information_schema при восстановлении старых дампов.",
       "env_variable": "RESTORE_DUMP_SKIP_SYSTEM",
       "default_value": "1",
       "user_viewable": true,
@@ -131,8 +131,8 @@
       "field_type": "text"
     },
     {
-      "name": "Restore Dump Force",
-      "description": "1 = Pass --force to the client so the import continues past SQL errors. The file is recorded as restored once per checksum only when the import completes (every pipeline stage succeeds); when SQL errors were reported, their count is printed in the console and appended to dump/.restored.sha256. 0 = a dump that reports errors is not recorded, so the next restart retries it.",
+      "name": "Принудительное восстановление дампа",
+      "description": "1 = продолжать импорт после SQL-ошибок. 0 = при ошибках дамп не помечается как успешно восстановленный.",
       "env_variable": "RESTORE_DUMP_FORCE",
       "default_value": "0",
       "user_viewable": true,
@@ -141,8 +141,8 @@
       "field_type": "text"
     },
     {
-      "name": "Restore Dump Compatibility Mode",
-      "description": "1 = Normalize legacy MariaDB/MySQL logical dumps before import. Automatically skips source replication state (GTID/SQL_LOG_BIN), removes obsolete NO_AUTO_CREATE_USER SQL mode tokens, and maps common MySQL 8 utf8mb4_0900 collations to MariaDB-compatible collations. The original dump is never modified. 0 = disable compatibility normalization.",
+      "name": "Режим совместимости дампа",
+      "description": "1 = автоматически нормализовать старые дампы MariaDB/MySQL перед восстановлением, не изменяя исходный файл.",
       "env_variable": "RESTORE_DUMP_COMPAT",
       "default_value": "1",
       "user_viewable": true,
@@ -151,8 +151,8 @@
       "field_type": "text"
     },
     {
-      "name": "Save Credentials to .env",
-      "description": "1 = Persist database connection parameters and credentials into /home/container/.env (mode 600). Set to 0 to keep credentials strictly in process startup variables.",
+      "name": "Сохранять данные подключения в .env",
+      "description": "1 = сохранять параметры подключения и пароли в /home/container/.env с правами 600.",
       "env_variable": "SAVE_TO_ENV",
       "default_value": "1",
       "user_viewable": true,
@@ -161,8 +161,8 @@
       "field_type": "text"
     },
     {
-      "name": "Dynamic Performance Auto-Tuning",
-      "description": "1 = Automatically calculate buffer pools, cache sizes, memory limits, and I/O threads based on allocated container RAM and CPU cores.",
+      "name": "Автонастройка производительности",
+      "description": "1 = автоматически рассчитывать размеры кэшей, буферов и потоков по выделенной памяти и CPU.",
       "env_variable": "PERFORMANCE_TUNING",
       "default_value": "1",
       "user_viewable": true,
@@ -171,8 +171,8 @@
       "field_type": "text"
     },
     {
-      "name": "Production Security Hardening",
-      "description": "1 = Enforce SCRAM-SHA-256 encryption, drop insecure default database accounts, restrict permissions, and disable dangerous debug commands.",
+      "name": "Усиление безопасности",
+      "description": "1 = включать рекомендуемые настройки безопасности и отключать небезопасные параметры по возможности.",
       "env_variable": "SECURITY_HARDENING",
       "default_value": "1",
       "user_viewable": true,
@@ -181,8 +181,8 @@
       "field_type": "text"
     },
     {
-      "name": "Extra Daemon Arguments",
-      "description": "Additional custom CLI flags passed directly to the database daemon on startup.",
+      "name": "Дополнительные аргументы базы данных",
+      "description": "Дополнительные параметры командной строки, передаваемые непосредственно процессу базы данных.",
       "env_variable": "EXTRA_ARGS",
       "default_value": "",
       "user_viewable": true,
@@ -191,8 +191,8 @@
       "field_type": "text"
     },
     {
-      "name": "Extra Download URLs",
-      "description": "Extra files to download at install time (one per line, e.g. 'dest/name|url' or plain URL).",
+      "name": "Дополнительные URL для загрузки",
+      "description": "Дополнительные файлы для загрузки при установке. Формат: путь/имя|URL, по одному на строку.",
       "env_variable": "EXTRA_URLS",
       "default_value": "",
       "user_viewable": true,
@@ -201,8 +201,8 @@
       "field_type": "text"
     },
     {
-      "name": "Custom Startup Command",
-      "description": "Command to run when DATABASE_TYPE=custom.",
+      "name": "Пользовательская команда запуска",
+      "description": "Команда, выполняемая при DATABASE_TYPE=custom.",
       "env_variable": "CUSTOM_COMMAND",
       "default_value": "",
       "user_viewable": true,
@@ -211,8 +211,8 @@
       "field_type": "text"
     },
     {
-      "name": "Smart Companion & Extra Runtimes",
-      "description": "Comma-separated companion tools to dynamically inject on-demand into .runtimes/ (e.g. python, uv, nodejs, bun, litestream, rclone, aws, psql, mongosh).",
+      "name": "Дополнительные runtime-инструменты",
+      "description": "Список дополнительных инструментов через запятую, например python, nodejs, bun, psql, mongosh.",
       "env_variable": "EXTRA_RUNTIMES",
       "default_value": "",
       "user_viewable": true,
@@ -221,8 +221,8 @@
       "field_type": "text"
     },
     {
-      "name": "Archive On Version Switch",
-      "description": "1 = when switching engine versions/upgrading, snapshot the previous data directory into ./archive/<engine>/ (compressed copy; originals are never deleted) so rollback is always possible. Credentials in .env are retained across switches either way. 0 = skip archiving.",
+      "name": "Архивировать данные при смене версии",
+      "description": "1 = перед сменой версии создавать сжатую копию предыдущих данных в ./archive/. Исходные данные не удаляются.",
       "env_variable": "ARCHIVE_ON_SWITCH",
       "default_value": "1",
       "user_viewable": true,
@@ -231,8 +231,8 @@
       "field_type": "text"
     },
     {
-      "name": "Redis Overcommit Memory",
-      "description": "1 = attempt vm.overcommit_memory=1 on the host for safe Redis fork()/background saves (requires root; otherwise prints one guidance line). Set 0 to skip entirely.",
+      "name": "Настройка Redis overcommit memory",
+      "description": "1 = попытаться включить vm.overcommit_memory=1 на хосте. Требуются соответствующие права.",
       "env_variable": "REDIS_OVERCOMMIT_MEMORY",
       "default_value": "1",
       "user_viewable": true,
@@ -241,8 +241,8 @@
       "field_type": "text"
     },
     {
-      "name": "Host Somaxconn",
-      "description": "Attempt net.core.somaxconn on the host for connection-heavy engines (0 = skip). Needs root; unprivileged runs print guidance only.",
+      "name": "Настройка Host somaxconn",
+      "description": "Значение net.core.somaxconn для высоких нагрузок. 0 = не изменять.",
       "env_variable": "HOST_SOMAXCONN",
       "default_value": "0",
       "user_viewable": true,
@@ -251,8 +251,8 @@
       "field_type": "text"
     },
     {
-      "name": "Disable Transparent Huge Pages",
-      "description": "1 = attempt THP=madvise on the host (reduces latency spikes for Redis/MongoDB). Needs root; unprivileged runs are silent no-ops.",
+      "name": "Отключение Transparent Huge Pages",
+      "description": "1 = попытаться установить THP в режим madvise на хосте.",
       "env_variable": "HOST_DISABLE_THP",
       "default_value": "1",
       "user_viewable": true,
@@ -261,8 +261,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Repository URL",
-      "description": "https GitHub repository to sync into the server workspace on startup (e.g. https://github.com/owner/repo or owner/repo). Leave empty to disable. On the first boot the repo is cloned; on later boots new commits are detected, the previous code is archived into ./archive/git-sync/ and only repo-managed files are replaced. Database data (data/), credentials (.env), bin/, logs/, config/ are never touched.",
+      "name": "URL Git-репозитория",
+      "description": "GitHub-репозиторий, который синхронизируется с рабочей директорией при запуске.",
       "env_variable": "GIT_REPO_URL",
       "default_value": "",
       "user_viewable": true,
@@ -271,8 +271,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Branch",
-      "description": "Branch to track in the Git repository (empty = the repo's default branch).",
+      "name": "Ветка Git",
+      "description": "Ветка Git-репозитория. Пусто = ветка по умолчанию.",
       "env_variable": "GIT_BRANCH",
       "default_value": "",
       "user_viewable": true,
@@ -281,8 +281,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Access Token",
-      "description": "Admin-only access token for PRIVATE repositories (classic PAT or fine-grained, read-only is enough). Never logged, never written to disk. Leave empty for public repos.",
+      "name": "Токен доступа Git",
+      "description": "Токен для доступа к приватному Git-репозиторию. Скрыт от пользователя панели.",
       "env_variable": "GIT_TOKEN",
       "default_value": "",
       "user_viewable": false,
@@ -291,8 +291,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Archive On Update",
-      "description": "1 = when new commits are detected, snapshot the previous synced code into ./archive/git-sync/ before updating (rollback always possible). 0 = replace without archiving.",
+      "name": "Архивировать код при обновлении Git",
+      "description": "1 = перед обновлением Git сохранять предыдущую версию кода в ./archive/git-sync/.",
       "env_variable": "GIT_ARCHIVE_ON_UPDATE",
       "default_value": "1",
       "user_viewable": true,
@@ -301,8 +301,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Preserve .env",
-      "description": "Keep every existing .env in its original location across repo syncs: the old credentials are restored after new GitHub files land, so the project never breaks (1 = Enabled, 0 = let repo .env files win).",
+      "name": "Сохранять .env при Git-синхронизации",
+      "description": "1 = существующие .env не заменяются файлами из Git.",
       "env_variable": "GIT_PRESERVE_ENV",
       "default_value": "1",
       "user_viewable": true,
@@ -311,8 +311,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Exclude Paths",
-      "description": "Space/comma-separated glob patterns git sync must never install or overwrite (e.g. custom/* secrets). Empty = sync everything not protected by the runtime.",
+      "name": "Исключения Git-синхронизации",
+      "description": "Шаблоны файлов и каталогов через пробел или запятую, которые нельзя устанавливать или перезаписывать.",
       "env_variable": "GIT_EXCLUDE",
       "default_value": "",
       "user_viewable": true,
@@ -321,8 +321,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Auto Update",
-      "description": "Poll the Git repository while the server runs and sync new commits into the workspace automatically. A console notice tells you when a restart is needed to load them (1 = Enabled, 0 = Disabled).",
+      "name": "Автообновление Git",
+      "description": "1 = проверять Git-репозиторий во время работы и синхронизировать новые коммиты.",
       "env_variable": "GIT_AUTO_UPDATE",
       "default_value": "1",
       "user_viewable": true,
@@ -331,8 +331,8 @@
       "field_type": "text"
     },
     {
-      "name": "Git Poll Interval",
-      "description": "How often, in seconds, Git Auto Update checks the repository for new commits (30-86400).",
+      "name": "Интервал проверки Git",
+      "description": "Интервал проверки новых коммитов Git в секундах: от 30 до 86400.",
       "env_variable": "GIT_POLL_SECONDS",
       "default_value": "300",
       "user_viewable": true,
@@ -341,18 +341,18 @@
       "field_type": "text"
     },
     {
-      "name": "Egg Update URL",
-      "description": "Check EGG_UPDATE_URL on startup and self-update the launcher when the upstream egg changed (raw GitHub egg JSON or run.sh URL).",
+      "name": "URL обновления egg",
+      "description": "HTTPS-адрес JSON egg или launcher для автоматического обновления runtime.",
       "env_variable": "EGG_UPDATE_URL",
-      "default_value": "https://raw.githubusercontent.com/PotenFYR-Studios/Database-Eggs/master/egg-database-multi.json",
+      "default_value": "https://raw.githubusercontent.com/bwproject/Database-Eggs/master/egg-database-multi.json",
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|max:512",
       "field_type": "text"
     },
     {
-      "name": "Auto Update Egg",
-      "description": "1 = check EGG_UPDATE_URL on startup and self-update the launcher when the upstream egg changed. 0 = disable the check entirely.",
+      "name": "Автообновление egg",
+      "description": "1 = проверять EGG_UPDATE_URL при запуске и обновлять launcher при изменении.",
       "env_variable": "AUTO_UPDATE_EGG",
       "default_value": "1",
       "user_viewable": true,
@@ -361,8 +361,8 @@
       "field_type": "text"
     },
     {
-      "name": "Panel Stop Watcher",
-      "description": "Watch console stdin for stop commands ('stop', '^C', 'exit', ...) delivered as text by TTY daemons (Feather Panel and other Wings-family stops). auto = on for all consoles; 0 = disable (keep stdin for the database); 1 = force on.",
+      "name": "Обработчик остановки панели",
+      "description": "Отслеживать команды stop, ^C, exit и другие команды остановки, переданные панелью через консоль.",
       "env_variable": "PANEL_STOP_WATCHER",
       "default_value": "auto",
       "user_viewable": true,
@@ -371,8 +371,8 @@
       "field_type": "text"
     },
     {
-      "name": "Console Theme",
-      "description": "Console output style. 'db' = agent theme (</> database-eggs prefixes); 'classic' = the previous [PotenFYR] bracket style.",
+      "name": "Тема консоли",
+      "description": "Стиль сообщений консоли: db или classic.",
       "env_variable": "CLI_THEME",
       "default_value": "db",
       "user_viewable": true,
@@ -381,13 +381,103 @@
       "field_type": "text"
     },
     {
-      "name": "Banner Gradient",
-      "description": "Boot banner color gradient: auto (random per boot), citrus, aurora, sunset, ocean, candy, spectrum, or none (flat).",
+      "name": "Градиент баннера",
+      "description": "Стиль градиента стартового баннера: auto, citrus, aurora, sunset, ocean, candy, spectrum или none.",
       "env_variable": "CLI_BANNER_GRADIENT",
       "default_value": "auto",
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|max:16",
+      "field_type": "text"
+    },
+    {
+      "name": "Включить бекап MySQL/MariaDB",
+      "description": "1 = ежедневно создавать сжатый дамп MySQL/MariaDB и загружать его в отдельный GitHub-репозиторий в указанное время.",
+      "env_variable": "MYSQL_BACKUP_ENABLED",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|boolean",
+      "field_type": "text"
+    },
+    {
+      "name": "GitHub-репозиторий для бекапов",
+      "description": "Репозиторий GitHub в формате owner/repository. Рекомендуется сделать его приватным, потому что резервные копии могут содержать пароли, токены и персональные данные.",
+      "env_variable": "MYSQL_BACKUP_GITHUB_REPOSITORY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:256",
+      "field_type": "text"
+    },
+    {
+      "name": "Ветка GitHub для бекапов",
+      "description": "Ветка, в которую будут записываться ежедневные резервные копии.",
+      "env_variable": "MYSQL_BACKUP_GITHUB_BRANCH",
+      "default_value": "main",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:128",
+      "field_type": "text"
+    },
+    {
+      "name": "GitHub-токен для бекапов",
+      "description": "Токен GitHub с правом Contents: write для репозитория бекапов. Никогда не выводится в консоль и не показывается пользователю панели.",
+      "env_variable": "MYSQL_BACKUP_GITHUB_TOKEN",
+      "default_value": "",
+      "user_viewable": false,
+      "user_editable": false,
+      "rules": "nullable|string|max:512",
+      "field_type": "text"
+    },
+    {
+      "name": "Время ежедневного бекапа",
+      "description": "Время ежедневного бекапа в часовом поясе TZ контейнера. Формат ЧЧ:ММ. По умолчанию 04:00.",
+      "env_variable": "MYSQL_BACKUP_TIME",
+      "default_value": "04:00",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:5",
+      "field_type": "text"
+    },
+    {
+      "name": "Путь бекапов в GitHub",
+      "description": "Каталог внутри репозитория GitHub, куда будут загружаться файлы резервных копий.",
+      "env_variable": "MYSQL_BACKUP_PATH",
+      "default_value": "backups/mysql",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:256",
+      "field_type": "text"
+    },
+    {
+      "name": "Базы данных для бекапа",
+      "description": "all = все базы данных. Или укажите список имён через запятую, например: database,website,auth.",
+      "env_variable": "MYSQL_BACKUP_DATABASES",
+      "default_value": "all",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:2048",
+      "field_type": "text"
+    },
+    {
+      "name": "Количество локальных бекапов",
+      "description": "Сколько последних сжатых бекапов хранить локально в .mysql-backups. История GitHub не удаляется.",
+      "env_variable": "MYSQL_BACKUP_KEEP_LOCAL",
+      "default_value": "3",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|numeric|min:0|max:100",
+      "field_type": "text"
+    },
+    {
+      "name": "Максимальный размер GitHub-бекапа (МБ)",
+      "description": "Максимальный размер одного сжатого файла перед загрузкой. По умолчанию 95 МБ, чтобы оставаться ниже ограничения GitHub в 100 МБ.",
+      "env_variable": "MYSQL_BACKUP_MAX_SIZE_MB",
+      "default_value": "95",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|numeric|min:1|max:99",
       "field_type": "text"
     }
   ]
