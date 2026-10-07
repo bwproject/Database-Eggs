@@ -900,7 +900,7 @@ sweep_stray_processes quick
 
 
 # -----------------------------------------------------------------------------
-# ProjectBW: Ежедневный бекап MySQL/MariaDB в отдельный GitHub-репозиторий
+# ProjectBW: Ежедневный полный бекап MySQL/MariaDB в GitHub
 # -----------------------------------------------------------------------------
 MYSQL_BACKUP_ENABLED="${MYSQL_BACKUP_ENABLED:-0}"
 MYSQL_BACKUP_GITHUB_REPOSITORY="${MYSQL_BACKUP_GITHUB_REPOSITORY:-}"
@@ -908,12 +908,11 @@ MYSQL_BACKUP_GITHUB_BRANCH="${MYSQL_BACKUP_GITHUB_BRANCH:-main}"
 MYSQL_BACKUP_GITHUB_TOKEN="${MYSQL_BACKUP_GITHUB_TOKEN:-}"
 MYSQL_BACKUP_TIME="${MYSQL_BACKUP_TIME:-04:00}"
 MYSQL_BACKUP_PATH="${MYSQL_BACKUP_PATH:-backups/mysql}"
-MYSQL_BACKUP_DATABASES="${MYSQL_BACKUP_DATABASES:-all}"
 MYSQL_BACKUP_KEEP_LOCAL="${MYSQL_BACKUP_KEEP_LOCAL:-3}"
-# Безопасный лимит одной части: 95 MiB, заметно ниже лимита GitHub в 100 MB.
+# Максимальный размер каждой загружаемой части: 95 MiB (с запасом до лимита GitHub).
 MYSQL_BACKUP_MAX_SIZE_MB="${MYSQL_BACKUP_MAX_SIZE_MB:-95}"
+
 case "${MYSQL_BACKUP_KEEP_LOCAL}" in ''|*[!0-9]*) MYSQL_BACKUP_KEEP_LOCAL=3 ;; esac
-case "${MYSQL_BACKUP_MAX_SIZE_MB}" in ''|*[!0-9]*) MYSQL_BACKUP_MAX_SIZE_MB=95 ;; esac
 
 mysql_backup_log() { printf '[Бекап MySQL] %s\n' "$*"; }
 mysql_backup_error() { printf '[Бекап MySQL] ОШИБКА: %s\n' "$*" >&2; }
@@ -936,22 +935,17 @@ mysql_backup_run() {
     [ "${MYSQL_BACKUP_ENABLED}" = "1" ] || return 0
     case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
 
-    [ -n "${MYSQL_BACKUP_GITHUB_REPOSITORY}" ] || {
-        mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_REPOSITORY."
-        return 1
-    }
-    [ -n "${MYSQL_BACKUP_GITHUB_TOKEN}" ] || {
-        mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_TOKEN."
-        return 1
-    }
+    [ -n "${MYSQL_BACKUP_GITHUB_REPOSITORY}" ] || { mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_REPOSITORY."; return 1; }
+    [ -n "${MYSQL_BACKUP_GITHUB_TOKEN}" ] || { mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_TOKEN."; return 1; }
+
     command -v mysqldump >/dev/null 2>&1 || { mysql_backup_error "Не найден mysqldump."; return 1; }
     command -v curl >/dev/null 2>&1 || { mysql_backup_error "Не найден curl."; return 1; }
     command -v gzip >/dev/null 2>&1 || { mysql_backup_error "Не найден gzip."; return 1; }
-    command -v base64 >/dev/null 2>&1 || { mysql_backup_error "Не найден base64."; return 1; }
     command -v split >/dev/null 2>&1 || { mysql_backup_error "Не найден split."; return 1; }
+    command -v base64 >/dev/null 2>&1 || { mysql_backup_error "Не найден base64."; return 1; }
 
     local workdir="${SERVER_DIR:-/home/container}/.mysql-backups"
-    mkdir -p "${workdir}" 2>/dev/null || return 1
+    mkdir -p "${workdir}" 2>/dev/null || { mysql_backup_error "Не удалось создать временную папку."; return 1; }
     chmod 700 "${workdir}" 2>/dev/null || true
 
     local client_cnf="${workdir}/client.cnf"
@@ -965,81 +959,93 @@ port=${SERVER_PORT:-3306}
 CNF
     chmod 600 "${client_cnf}"
 
-    local timestamp archive dump_rc size part_size part_count repo backup_dir api json_tmp http_code
+    local timestamp base_archive dump_rc compressed_size part_size backup_dir repo api
     timestamp=$(date '+%d.%m.%Y_%H-%M-%S')
-    archive="${workdir}/mysql-${timestamp}.sql.gz"
+    base_archive="${workdir}/mysql-${timestamp}.sql.gz"
+    # 95 MiB = 95 * 1024 * 1024 bytes.
     part_size=$((95 * 1024 * 1024))
 
-    mysql_backup_log "Создание полного dump MySQL/MariaDB и сжатие..."
+    mysql_backup_log "Создание ПОЛНОГО dump MySQL/MariaDB и сжатие gzip -9..."
+    set -o pipefail
     mysqldump --defaults-extra-file="${client_cnf}" \
         --all-databases --single-transaction --routines --events --triggers --hex-blob \
-        2>/dev/null | gzip -9 > "${archive}"
-    dump_rc=${PIPESTATUS[0]}
+        2>"${workdir}/mysqldump-error.log" | gzip -9 > "${base_archive}"
+    dump_rc=$?
+    set +o pipefail
     rm -f "${client_cnf}" 2>/dev/null || true
 
-    if [ "${dump_rc}" -ne 0 ] || [ ! -s "${archive}" ]; then
-        mysql_backup_error "mysqldump завершился с ошибкой (код ${dump_rc})."
-        rm -f "${archive}" 2>/dev/null || true
+    if [ "${dump_rc}" -ne 0 ] || [ ! -s "${base_archive}" ]; then
+        mysql_backup_error "Не удалось создать полный dump (код ${dump_rc})."
+        [ -s "${workdir}/mysqldump-error.log" ] && head -c 2000 "${workdir}/mysqldump-error.log" >&2
+        rm -f "${base_archive}" "${workdir}/mysqldump-error.log" 2>/dev/null || true
         return 1
     fi
+    rm -f "${workdir}/mysqldump-error.log" 2>/dev/null || true
 
-    size=$(wc -c < "${archive}" 2>/dev/null || echo 0)
-    mysql_backup_log "Размер сжатого полного dump: ${size} байт."
+    compressed_size=$(wc -c < "${base_archive}" 2>/dev/null || echo 0)
+    mysql_backup_log "Размер полного сжатого dump: ${compressed_size} байт."
 
     repo="${MYSQL_BACKUP_GITHUB_REPOSITORY#https://github.com/}"
     repo="${repo#http://github.com/}"
     repo="${repo%.git}"
-    case "${repo}" in */*) ;; *) mysql_backup_error "MYSQL_BACKUP_GITHUB_REPOSITORY должен быть owner/repository."; return 1 ;; esac
+    case "${repo}" in */*) ;; *) mysql_backup_error "MYSQL_BACKUP_GITHUB_REPOSITORY должен быть owner/repository."; rm -f "${base_archive}"; return 1 ;; esac
 
     backup_dir="${MYSQL_BACKUP_PATH%/}/$(date '+%d.%m.%Y')"
     backup_dir="${backup_dir#/}"
+    mkdir -p "${workdir}/parts-${timestamp}"
 
-    if [ "${size}" -gt "${part_size}" ]; then
-        mysql_backup_log "Dump больше 95 MiB — делим сжатый архив на части по 95 MiB."
-        split -b "${part_size}" -d -a 4 "${archive}" "${archive}.part-" || {
-            mysql_backup_error "Не удалось разделить архив."
-            rm -f "${archive}" "${archive}.part-"* 2>/dev/null || true
+    # Если dump не превышает 95 MiB — загружаем его целиком.
+    # Если превышает — режем УЖЕ СЖАТЫЙ .gz-файл на части по 95 MiB.
+    if [ "${compressed_size}" -gt "${part_size}" ]; then
+        mysql_backup_log "Размер больше 95 MiB — деление сжатого архива на части."
+        split -b "${part_size}" -d -a 4 "${base_archive}" "${workdir}/parts-${timestamp}/part-" || {
+            mysql_backup_error "Не удалось разделить сжатый архив."
+            rm -rf "${workdir}/parts-${timestamp}" "${base_archive}" 2>/dev/null || true
             return 1
         }
-        rm -f "${archive}" 2>/dev/null || true
+        rm -f "${base_archive}"
     else
-        mv -f "${archive}" "${archive}.part-0000"
+        mv -f "${base_archive}" "${workdir}/parts-${timestamp}/part-0000"
     fi
 
-    part_count=0
-    local part=""
-    for part in "${workdir}"/mysql-"${timestamp}".sql.gz.part-*; do
+    local part_count=0 part current_no=0 filename path json_tmp http_code part_size_now
+    for part in "${workdir}/parts-${timestamp}"/part-*; do
         [ -f "${part}" ] || continue
         part_count=$((part_count + 1))
     done
-
     [ "${part_count}" -gt 0 ] || {
-        mysql_backup_error "После подготовки не найдено ни одной части dump."
+        mysql_backup_error "Не найдено частей для загрузки."
+        rm -rf "${workdir}/parts-${timestamp}"
         return 1
     }
 
-    mysql_backup_log "Подготовлено частей: ${part_count}."
-    local current_no=0
-    for part in "${workdir}"/mysql-"${timestamp}".sql.gz.part-*; do
+    mysql_backup_log "Подготовлено частей: ${part_count}. Папка GitHub: ${backup_dir}"
+
+    for part in "${workdir}/parts-${timestamp}"/part-*; do
         [ -f "${part}" ] || continue
         current_no=$((current_no + 1))
+        part_size_now=$(wc -c < "${part}" 2>/dev/null || echo 0)
 
-        local suffix filename path
-        suffix=$(printf '%04d' "${current_no}")
-        filename="mysql-${timestamp}.part-${suffix}.sql.gz"
+        if [ "${part_count}" -eq 1 ]; then
+            filename="mysql-${timestamp}.sql.gz"
+        else
+            filename="mysql-${timestamp}.part-$(printf '%03d' "${current_no}")-$(printf '%03d' "${part_count}").gz"
+        fi
+
         path="${backup_dir}/${filename}"
         api="https://api.github.com/repos/${repo}/contents/${path}"
         json_tmp=$(mktemp "${workdir}/.github-upload.XXXXXX") || return 1
         chmod 600 "${json_tmp}"
 
         {
-            printf '{"message":"Бекап MySQL/MariaDB %s — часть %s/%s","branch":"%s","content":"' \
+            printf '{"message":"Бекап MySQL/MariaDB %s — файл %s/%s","branch":"%s","content":"' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${current_no}" "${part_count}" "${MYSQL_BACKUP_GITHUB_BRANCH}"
             base64 -w 0 "${part}" 2>/dev/null || base64 "${part}" | tr -d '\n'
             printf '"}'
         } > "${json_tmp}"
 
-        mysql_backup_log "Загрузка части ${current_no}/${part_count}: ${repo}/${path}..."
+        mysql_backup_log "Загрузка ${current_no}/${part_count} (${part_size_now} байт): ${path}"
+
         http_code=$(curl -sS --retry 3 --max-time 900 \
             -o "${workdir}/github-response.txt" -w '%{http_code}' -X PUT \
             -H 'Accept: application/vnd.github+json' \
@@ -1052,27 +1058,27 @@ CNF
 
         case "${http_code}" in
             200|201)
-                mysql_backup_log "Часть ${current_no}/${part_count} успешно загружена."
-                rm -f "${part}" 2>/dev/null || true
+                mysql_backup_log "Файл ${current_no}/${part_count} успешно загружен."
                 ;;
             *)
-                mysql_backup_error "GitHub вернул HTTP ${http_code} для части ${current_no}/${part_count}. Часть сохранена локально: ${part}"
-                if [ -s "${workdir}/github-response.txt" ]; then
-                    head -c 1000 "${workdir}/github-response.txt" >&2
-                    printf '\n' >&2
-                fi
+                mysql_backup_error "GitHub вернул HTTP ${http_code}. Файл оставлен локально для повторной загрузки: ${part}"
+                [ -s "${workdir}/github-response.txt" ] && head -c 2000 "${workdir}/github-response.txt" >&2 && printf '\n' >&2
                 return 1
                 ;;
         esac
     done
 
-    rm -f "${workdir}/github-response.txt" 2>/dev/null || true
+    # Удаляем временные части только после успешной загрузки ВСЕХ файлов.
+    rm -rf "${workdir}/parts-${timestamp}" "${workdir}/github-response.txt" 2>/dev/null || true
 
-    if [ "${MYSQL_BACKUP_KEEP_LOCAL}" -ge 0 ] 2>/dev/null; then
-        find "${workdir}" -maxdepth 1 -type f -name 'mysql-*.sql.gz.part-*' -printf '%T@ %p\n' 2>/dev/null |
+    # Оставляем только последние N локальных бекапов/частей от неуспешных запусков.
+    if [ "${MYSQL_BACKUP_KEEP_LOCAL}" -gt 0 ] 2>/dev/null; then
+        find "${workdir}" -maxdepth 1 -type d -name 'parts-*' -printf '%T@ %p\n' 2>/dev/null |
             sort -nr | tail -n +$((MYSQL_BACKUP_KEEP_LOCAL + 1)) |
-            cut -d' ' -f2- | xargs -r rm -f 2>/dev/null || true
+            cut -d' ' -f2- | xargs -r rm -rf 2>/dev/null || true
     fi
+
+    mysql_backup_log "Полный бекап ${timestamp} успешно загружен в ${repo}/${backup_dir}."
     return 0
 }
 
@@ -1083,12 +1089,14 @@ mysql_backup_scheduler() {
         while true; do
             local wait_seconds
             wait_seconds=$(mysql_backup_seconds_until)
-            mysql_backup_log "Следующий бекап: ${MYSQL_BACKUP_TIME} (через ${wait_seconds} сек., TZ=${TZ:-UTC})."
+            mysql_backup_log "Следующий полный бекап: ${MYSQL_BACKUP_TIME} (через ${wait_seconds} сек., TZ=${TZ:-UTC})."
             sleep "${wait_seconds}"
+
             local attempt=1
             while [ "${attempt}" -le 10 ]; do
                 if mysql_backup_run; then break; fi
                 [ "${attempt}" -lt 10 ] || break
+                mysql_backup_log "Повторная попытка ${attempt}/10 через 60 секунд..."
                 sleep 60
                 attempt=$((attempt + 1))
             done
@@ -1097,7 +1105,7 @@ mysql_backup_scheduler() {
     ) &
     MYSQL_BACKUP_PID=$!
     export MYSQL_BACKUP_PID
-    mysql_backup_log "Ежедневный бекап включён: ${MYSQL_BACKUP_TIME}; GitHub: ${MYSQL_BACKUP_GITHUB_REPOSITORY}; размер части: 95 MiB; папка: ${MYSQL_BACKUP_PATH%/}/ДД.ММ.ГГГГ."
+    mysql_backup_log "Ежедневный полный бекап включён: ${MYSQL_BACKUP_TIME}; GitHub: ${MYSQL_BACKUP_GITHUB_REPOSITORY}; лимит части: 95 MiB; папка: ${MYSQL_BACKUP_PATH%/}/ДД.ММ.ГГГГ."
 }
 
 mysql_backup_scheduler
