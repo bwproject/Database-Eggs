@@ -845,6 +845,24 @@ supervise_daemon() {
                                 # original watcher behavior and is only logged.
                                 case "${PROJECT_TYPE,,}" in
                                     mariadb|mysql)
+                                        case "${clean_cmd}" in
+                                            backup)
+                                                log "Команда 'backup' получена. Запускаем бекап MySQL/MariaDB вручную..."
+                                                if declare -F mysql_backup_run >/dev/null 2>&1; then
+                                                    (
+                                                        if mysql_backup_run; then
+                                                            mysql_backup_log "Ручной бекап по команде 'backup' завершён успешно."
+                                                        else
+                                                            mysql_backup_error "Ручной бекап по команде 'backup' завершился ошибкой."
+                                                        fi
+                                                    ) &
+                                                else
+                                                    mysql_backup_error "Система бекапа ещё не инициализирована."
+                                                fi
+                                                continue
+                                                ;;
+                                        esac
+
                                         if declare -F db_console_handle >/dev/null 2>&1; then
                                             if db_console_handle "${line}" 3; then
                                                 continue
