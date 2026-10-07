@@ -861,6 +861,21 @@ supervise_daemon() {
                                                 fi
                                                 continue
                                                 ;;
+                                            restore*)
+                                                if declare -F mysql_backup_restore >/dev/null 2>&1; then
+                                                    if [[ "${line}" =~ ^[[:space:]]*[Rr][Ee][Ss][Tt][Oo][Rr][Ee]([[:space:]]+(.+))?[[:space:]]*$ ]]; then
+                                                        restore_selector="${BASH_REMATCH[2]}"
+                                                        (
+                                                            mysql_backup_restore "${restore_selector}"
+                                                        ) &
+                                                    else
+                                                        mysql_backup_error "Использование: restore <ДД.ММ.ГГГГ> или restore <ДД.ММ.ГГГГ/имя-файла>"
+                                                    fi
+                                                else
+                                                    mysql_backup_error "Система восстановления ещё не инициализирована."
+                                                fi
+                                                continue
+                                                ;;
                                         esac
 
                                         if declare -F db_console_handle >/dev/null 2>&1; then
@@ -1225,6 +1240,412 @@ CNF
     mysql_backup_log "Полный бекап ${timestamp} успешно загружен в ${repo}/${backup_dir}."
     mysql_backup_log "ПРОВЕРКА ЗАВЕРШЕНА: все ${part_count} файл(а) найдены через GitHub API."
     mysql_backup_log "Лог бекапа: ${MYSQL_BACKUP_LOG_FILE}"
+    return 0
+}
+
+
+mysql_backup_restore() {
+    local selector="${1:-}"
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) mysql_backup_error "Восстановление доступно только для MySQL/MariaDB."; return 1 ;; esac
+
+    [ -n "${MYSQL_BACKUP_GITHUB_REPOSITORY}" ] || { mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_REPOSITORY."; return 1; }
+    [ -n "${MYSQL_BACKUP_GITHUB_TOKEN}" ] || { mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_TOKEN."; return 1; }
+    command -v curl >/dev/null 2>&1 || { mysql_backup_error "Не найден curl."; return 1; }
+    command -v gzip >/dev/null 2>&1 || { mysql_backup_error "Не найден gzip."; return 1; }
+    command -v mysql >/dev/null 2>&1 || { mysql_backup_error "Не найден mysql."; return 1; }
+
+    if [ -z "${selector}" ]; then
+        mysql_backup_error "Использование: restore <ДД.ММ.ГГГГ> или restore <ДД.ММ.ГГГГ/имя-файла>"
+        return 1
+    fi
+
+    local workdir="${SERVER_DIR:-/home/container}/.mysql-backups"
+    mkdir -p "${workdir}" 2>/dev/null || { mysql_backup_error "Не удалось создать временную папку."; return 1; }
+    chmod 700 "${workdir}" 2>/dev/null || true
+
+    local repo="${MYSQL_BACKUP_GITHUB_REPOSITORY#https://github.com/}"
+    repo="${repo#http://github.com/}"
+    repo="${repo%.git}"
+    case "${repo}" in */*) ;; *) mysql_backup_error "MYSQL_BACKUP_GITHUB_REPOSITORY должен быть owner/repository."; return 1 ;; esac
+
+    local backup_root="${MYSQL_BACKUP_PATH%/}"
+    backup_root="${backup_root#/}"
+    local target="${selector}"
+    local date_part file_part
+    if [[ "${target}" == */* ]]; then
+        date_part="${target%%/*}"
+        file_part="${target#*/}"
+    else
+        date_part="${target}"
+        file_part=""
+    fi
+
+    if ! [[ "${date_part}" =~ ^[0-9]{2}\.[0-9]{2}\.[0-9]{4}$ ]]; then
+        mysql_backup_error "Неверная дата. Используйте формат ДД.ММ.ГГГГ, например: restore 07.10.2026"
+        return 1
+    fi
+
+    local api_dir="https://api.github.com/repos/${repo}/contents/${backup_root}/${date_part}"
+    local list_file="${workdir}/restore-list.json"
+    local restore_dir="${workdir}/restore-${date_part//./-}"
+    rm -rf "${restore_dir}" 2>/dev/null || true
+    mkdir -p "${restore_dir}"
+
+    local list_code
+    list_code=$(curl -sS --retry 3 --max-time 120 -o "${list_file}" -w '%{http_code}' -G \
+        -H 'Accept: application/vnd.github+json' \
+        -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
+        -H 'X-GitHub-Api-Version: 2026-03-10' \
+        --data-urlencode "ref=${MYSQL_BACKUP_GITHUB_BRANCH}" \
+        "${api_dir}" 2>"${workdir}/restore-curl-error.txt" || echo 000)
+
+    if [ "${list_code}" != "200" ]; then
+        mysql_backup_error "Не удалось получить список бекапов: GitHub HTTP ${list_code}."
+        [ -s "${list_file}" ] && head -c 3000 "${list_file}" >&2 && printf '\n' >&2
+        [ -s "${workdir}/restore-curl-error.txt" ] && head -c 2000 "${workdir}/restore-curl-error.txt" >&2 && printf '\n' >&2
+        rm -rf "${restore_dir}"
+        return 1
+    fi
+
+    local items_file="${restore_dir}/items.tsv"
+    if ! command -v python3 >/dev/null 2>&1; then
+        mysql_backup_error "Для restore нужен python3 для разбора ответа GitHub API."
+        rm -rf "${restore_dir}"
+        return 1
+    fi
+
+    python3 - "${list_file}" "${file_part}" > "${items_file}" <<'PY'
+import json, sys
+p, wanted = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(p, encoding="utf-8"))
+except Exception as e:
+    print(f"ERROR\t{e}")
+    raise SystemExit(2)
+if isinstance(data, dict):
+    data = [data]
+rows = []
+for x in data:
+    name = x.get("name", "")
+    url = x.get("download_url", "")
+    if (name.endswith(".sql.gz") or (".part-" in name and name.endswith(".gz"))) and (not wanted or name == wanted):
+        rows.append((name, url))
+for name, url in sorted(rows):
+    print(name + "\t" + url)
+if wanted and not rows:
+    raise SystemExit(3)
+PY
+    local py_rc=$?
+    if [ "${py_rc}" -ne 0 ]; then
+        mysql_backup_error "В выбранной папке не найден указанный backup-файл."
+        rm -rf "${restore_dir}"
+        return 1
+    fi
+
+    local count
+    count=$(wc -l < "${items_file}" 2>/dev/null || echo 0)
+    [ "${count}" -gt 0 ] || {
+        mysql_backup_error "В ${date_part} не найдено файлов бекапа."
+        rm -rf "${restore_dir}"
+        return 1
+    }
+
+    local selected_names="${restore_dir}/selected.txt"
+    : > "${selected_names}"
+    if [ -n "${file_part}" ]; then
+        awk -F '\t' '{print $1}' "${items_file}" > "${selected_names}"
+    else
+        local first_name
+        first_name=$(head -n 1 "${items_file}" | cut -f1)
+        if [[ "${first_name}" == *".part-"* ]]; then
+            local set_prefix
+            set_prefix="${first_name%%.part-*}"
+            awk -F '\t' -v p="${set_prefix}" '$1 ~ ("^" p "\\.part-[0-9]{3}-[0-9]{3}\\.gz$") {print $1}' "${items_file}" > "${selected_names}"
+        else
+            printf '%s\n' "${first_name}" > "${selected_names}"
+        fi
+    fi
+
+    count=$(wc -l < "${selected_names}" 2>/dev/null || echo 0)
+    [ "${count}" -gt 0 ] || {
+        mysql_backup_error "Не удалось определить набор файлов для восстановления."
+        rm -rf "${restore_dir}"
+        return 1
+    }
+
+    mysql_backup_log "Восстановление из GitHub: ${repo}/${backup_root}/${date_part}"
+    mysql_backup_log "Файлов для восстановления: ${count}"
+    mysql_backup_log "ВНИМАНИЕ: текущие базы данных будут изменены содержимым выбранного полного dump."
+
+    local client_cnf="${restore_dir}/client.cnf"
+    umask 077
+    cat > "${client_cnf}" <<CNF
+[client]
+user=root
+password=${DB_ROOT_PASSWORD}
+host=127.0.0.1
+port=${SERVER_PORT:-3306}
+CNF
+    chmod 600 "${client_cnf}"
+
+    local name url code
+    : > "${restore_dir}/backup.sql.gz"
+    while IFS=
+    [ "${MYSQL_BACKUP_ENABLED}" = "1" ] || return 0
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
+    (
+        while true; do
+            local wait_seconds
+            wait_seconds=$(mysql_backup_seconds_until)
+            mysql_backup_log "Следующий полный бекап: ${MYSQL_BACKUP_TIME} (через ${wait_seconds} сек., TZ=${TZ:-UTC})."
+            sleep "${wait_seconds}"
+
+            local attempt=1
+            while [ "${attempt}" -le 10 ]; do
+                if mysql_backup_run; then break; fi
+                [ "${attempt}" -lt 10 ] || break
+                mysql_backup_log "Повторная попытка ${attempt}/10 через 60 секунд..."
+                sleep 60
+                attempt=$((attempt + 1))
+            done
+            sleep 65
+        done
+    ) &
+    MYSQL_BACKUP_PID=$!
+    export MYSQL_BACKUP_PID
+    mysql_backup_log "Ежедневный полный бекап включён: ${MYSQL_BACKUP_TIME}; GitHub: ${MYSQL_BACKUP_GITHUB_REPOSITORY}; лимит части: 95 MiB; папка: ${MYSQL_BACKUP_PATH%/}/ДД.ММ.ГГГГ."
+}
+
+mysql_backup_scheduler
+
+# -----------------------------------------------------------------------------
+# ProjectBW: phpMyAdmin web interface for MySQL/MariaDB
+# -----------------------------------------------------------------------------
+PHPMYADMIN_ENABLED="${PHPMYADMIN_ENABLED:-1}"
+PHPMYADMIN_PORT="${PHPMYADMIN_PORT:-8080}"
+PHPMYADMIN_HOST="${PHPMYADMIN_HOST:-0.0.0.0}"
+PHPMYADMIN_DB_HOST="${PHPMYADMIN_DB_HOST:-127.0.0.1}"
+PHPMYADMIN_DB_PORT="${PHPMYADMIN_DB_PORT:-${SERVER_PORT:-3306}}"
+PHPMYADMIN_DIR="${SERVER_DIR}/.phpmyadmin"
+PHPMYADMIN_LOG="${SERVER_DIR}/logs/phpmyadmin.log"
+PHPMYADMIN_PID_FILE="${SERVER_DIR}/run/phpmyadmin.pid"
+
+start_phpmyadmin() {
+    [ "${PHPMYADMIN_ENABLED}" = "1" ] || return 0
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
+
+    case "${PHPMYADMIN_PORT}" in
+        ''|*[!0-9]*) PHPMYADMIN_PORT=8080 ;;
+    esac
+    if [ "${PHPMYADMIN_PORT}" -lt 1024 ] || [ "${PHPMYADMIN_PORT}" -gt 65535 ]; then
+        warn "Некорректный PHPMYADMIN_PORT=${PHPMYADMIN_PORT}; используется 8080."
+        PHPMYADMIN_PORT=8080
+    fi
+
+    if ! command -v php >/dev/null 2>&1; then
+        warn "phpMyAdmin включён, но PHP CLI отсутствует в Docker-образе. Web-интерфейс не запущен."
+        return 1
+    fi
+    if [ ! -f "/opt/phpmyadmin/index.php" ]; then
+        warn "phpMyAdmin не найден в Docker-образе /opt/phpmyadmin."
+        return 1
+    fi
+
+    mkdir -p "${PHPMYADMIN_DIR}/tmp" "${SERVER_DIR}/run" "${SERVER_DIR}/logs" 2>/dev/null || true
+    chmod 700 "${PHPMYADMIN_DIR}" "${PHPMYADMIN_DIR}/tmp" 2>/dev/null || true
+
+    # Keep the application in the server volume so config/session data survive restarts.
+    if [ ! -f "${PHPMYADMIN_DIR}/index.php" ]; then
+        cp -a /opt/phpmyadmin/. "${PHPMYADMIN_DIR}/" 2>/dev/null || {
+            warn "Не удалось скопировать phpMyAdmin в ${PHPMYADMIN_DIR}."
+            return 1
+        }
+    fi
+    mkdir -p "${PHPMYADMIN_DIR}/tmp"
+
+    local cfg="${PHPMYADMIN_DIR}/config.inc.php"
+    if [ ! -f "${cfg}" ]; then
+        local secret
+        if command -v openssl >/dev/null 2>&1; then
+            secret=$(openssl rand -hex 32 2>/dev/null || true)
+        fi
+        [ -n "${secret}" ] || secret=$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+        [ "${#secret}" -ge 32 ] || secret=$(printf '%s-%s-%s' "${SERVER_DIR}" "${RANDOM}" "${PPID}" | sha256sum | cut -d' ' -f1)
+
+        cat > "${cfg}" <<PHP_CONFIG
+<?php
+$cfg['blowfish_secret'] = '${secret}';
+$i = 0;
+$i++;
+$cfg['Servers'][$i]['auth_type'] = 'cookie';
+$cfg['Servers'][$i]['host'] = '${PHPMYADMIN_DB_HOST}';
+$cfg['Servers'][$i]['port'] = ${PHPMYADMIN_DB_PORT};
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
+$cfg['TempDir'] = '${PHPMYADMIN_DIR}/tmp';
+PHP_CONFIG
+        chmod 600 "${cfg}" 2>/dev/null || true
+    fi
+
+    # Do not start a second copy if one is already listening on the configured port.
+    if [ -f "${PHPMYADMIN_PID_FILE}" ]; then
+        local old_pid
+        old_pid=$(cat "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true)
+        if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+            log "phpMyAdmin уже запущен: http://${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT}"
+            return 0
+        fi
+        rm -f "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    fi
+
+    log "Запуск phpMyAdmin: http://${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT} -> MySQL/MariaDB ${PHPMYADMIN_DB_HOST}:${PHPMYADMIN_DB_PORT}"
+    (
+        cd "${PHPMYADMIN_DIR}" || exit 1
+        exec php -d upload_max_filesize=256M -d post_max_size=256M \
+            -d max_execution_time=300 -d memory_limit=512M \
+            -S "${PHPMYADMIN_HOST}:${PHPMYADMIN_PORT}" -t "${PHPMYADMIN_DIR}"
+    ) >>"${PHPMYADMIN_LOG}" 2>&1 &
+    local pma_pid=$!
+    echo "${pma_pid}" > "${PHPMYADMIN_PID_FILE}"
+    chmod 600 "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    export PHPMYADMIN_PID="${pma_pid}"
+
+    sleep 1
+    if kill -0 "${pma_pid}" 2>/dev/null; then
+        ok "phpMyAdmin запущен на порту ${PHPMYADMIN_PORT}. Добавьте этот порт как allocation в панели, если нужен внешний доступ."
+        return 0
+    fi
+
+    warn "phpMyAdmin не смог запуститься. Последние строки лога:"
+    tail -n 30 "${PHPMYADMIN_LOG}" 2>/dev/null || true
+    rm -f "${PHPMYADMIN_PID_FILE}" 2>/dev/null || true
+    return 1
+}
+
+start_phpmyadmin || true
+
+# --- Engine Dispatcher ------------------------------------------------------
+case "${PROJECT_TYPE}" in
+    mariadb|mysql)
+        init_mariadb_mysql
+        print_connection_guide
+        setup_phpmyadmin || true
+        start_mariadb_mysql
+        ;;
+    postgresql|postgres)
+        init_postgres
+        print_connection_guide
+        start_postgres
+        ;;
+    redis|valkey|keydb|dragonfly|memcached)
+        init_redis_family
+        print_connection_guide
+        start_redis_family
+        ;;
+    mongodb|mongo|ferretdb)
+        init_mongo_family
+        print_connection_guide
+        start_mongo_family
+        ;;
+    surrealdb|rethinkdb)
+        init_surreal_family
+        print_connection_guide
+        start_surreal_family
+        ;;
+    cockroachdb|cockroach|tidb|dolt|sqld|libsql|etcd|nats|immudb|dgraph|arangodb|orientdb|ravendb|cassandra|aerospike|yugabytedb|yugabyte|kafka)
+        init_extra_engine
+        print_connection_guide
+        start_extra_engine
+        ;;
+    meilisearch|typesense|qdrant|elasticsearch|opensearch|solr|manticoresearch|manticore|milvus|weaviate|quickwit)
+        init_search_family
+        print_connection_guide
+        start_search_family
+        ;;
+    pocketbase|minio|influxdb|clickhouse|victoriametrics|couchdb|neo4j|questdb|seaweedfs|weed|garage|prometheus|consul|loki|sqlite)
+        init_storage_family
+        print_connection_guide
+        start_storage_family
+        ;;
+    custom)
+        print_connection_guide
+        mkdir -p "${SERVER_DIR}/bin" "${SERVER_DIR}/data" "${SERVER_DIR}/logs" "${SERVER_DIR}/config"
+
+        if [ -n "${CUSTOM_PRE_RUN_SCRIPT:-}" ]; then
+            log "Executing pre-run custom script..."
+            eval "${CUSTOM_PRE_RUN_SCRIPT}"
+        fi
+
+        if [ -n "${CUSTOM_DOWNLOAD_URL:-}" ] && [ ! -f "${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME:-app}" ]; then
+            log "Downloading custom binary from ${CUSTOM_DOWNLOAD_URL}..."
+            "${SERVER_DIR}/scripts/install-db-version.sh" "custom" "${CUSTOM_DOWNLOAD_URL}" "${SERVER_DIR}/bin" || true
+        fi
+
+        run_cmd="${CUSTOM_COMMAND:-${CUSTOM_STARTUP_CMD:-}}"
+        if [ -z "${run_cmd}" ]; then
+            if [ -n "${CUSTOM_BINARY_NAME:-}" ] && [ -x "${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME}" ]; then
+                run_cmd="${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME} ${CUSTOM_ARGS:-}"
+            elif [ -x "${SERVER_DIR}/bin/server" ]; then
+                run_cmd="${SERVER_DIR}/bin/server ${CUSTOM_ARGS:-}"
+            elif [ -x "${SERVER_DIR}/server" ]; then
+                run_cmd="${SERVER_DIR}/server ${CUSTOM_ARGS:-}"
+            fi
+        fi
+
+        if [ -n "${run_cmd}" ]; then
+            log "Starting Custom Engine: ${run_cmd}"
+            # eval (in a subshell) so quoted/complex commands survive intact;
+            # the subshell PID becomes the supervised daemon.
+            ( eval "${run_cmd}" ) < /dev/null &
+            daemon_pid=$!
+            supervise_daemon "${daemon_pid}"
+        else
+            fail "CUSTOM_COMMAND or CUSTOM_BINARY_NAME is empty. Provide a valid command or binary to run."
+        fi
+        ;;
+    *)
+        fail "Unsupported database engine: '${PROJECT_TYPE}'"
+        ;;
+esac\t' read -r name url; do
+        [ -n "${name}" ] || continue
+        [ -n "${url}" ] || { mysql_backup_error "У GitHub нет download_url для ${name}."; rm -rf "${restore_dir}"; return 1; }
+        mysql_backup_log "Скачивание: ${name}"
+        code=$(curl -sS --retry 3 --max-time 900 -L -o "${restore_dir}/${name}" -w '%{http_code}' \
+            -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
+            -H 'Accept: application/octet-stream' \
+            "${url}" 2>"${workdir}/restore-download-error.txt" || echo 000)
+        if [ "${code}" != "200" ] || [ ! -s "${restore_dir}/${name}" ]; then
+            mysql_backup_error "Не удалось скачать ${name}: HTTP ${code}."
+            [ -s "${workdir}/restore-download-error.txt" ] && head -c 2000 "${workdir}/restore-download-error.txt" >&2 && printf '\n' >&2
+            rm -rf "${restore_dir}"
+            return 1
+        fi
+        cat "${restore_dir}/${name}" >> "${restore_dir}/backup.sql.gz"
+    done < "${items_file}"
+
+    mysql_backup_log "Проверка gzip-потока..."
+    if ! gzip -t "${restore_dir}/backup.sql.gz" 2>"${restore_dir}/gzip-error.txt"; then
+        mysql_backup_error "Скачанный backup повреждён или выбран неполный набор частей."
+        [ -s "${restore_dir}/gzip-error.txt" ] && cat "${restore_dir}/gzip-error.txt" >&2
+        rm -rf "${restore_dir}"
+        return 1
+    fi
+
+    mysql_backup_log "Запуск восстановления MySQL/MariaDB..."
+    set -o pipefail
+    gzip -dc "${restore_dir}/backup.sql.gz" | mysql --defaults-extra-file="${client_cnf}" \
+        2>"${restore_dir}/mysql-restore-error.log"
+    local restore_rc=$?
+    set +o pipefail
+    rm -f "${client_cnf}" 2>/dev/null || true
+
+    if [ "${restore_rc}" -ne 0 ]; then
+        mysql_backup_error "Восстановление завершилось с ошибкой (код ${restore_rc})."
+        [ -s "${restore_dir}/mysql-restore-error.log" ] && head -c 5000 "${restore_dir}/mysql-restore-error.log" >&2 && printf '\n' >&2
+        return 1
+    fi
+
+    mysql_backup_log "ВОССТАНОВЛЕНИЕ УСПЕШНО ЗАВЕРШЕНО из ${date_part}."
+    rm -rf "${restore_dir}" "${list_file}" "${workdir}/restore-curl-error.txt" "${workdir}/restore-download-error.txt" 2>/dev/null || true
     return 0
 }
 
