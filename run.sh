@@ -995,7 +995,7 @@ APACHE
     apache2ctl -k stop >/dev/null 2>&1 || true
     if apache2ctl -k start >/dev/null 2>&1; then
         ok "phpMyAdmin запущен: http://0.0.0.0:$PHPMYADMIN_PORT/"
-        log "phpMyAdmin подключён к MySQL/MariaDB на порту @@DB_PORT@@"
+        log "phpMyAdmin подключён к MySQL/MariaDB на порту ${SERVER_PORT:-3306}"
     else
         error "Не удалось запустить Apache/phpMyAdmin на порту $PHPMYADMIN_PORT."
         return 1
