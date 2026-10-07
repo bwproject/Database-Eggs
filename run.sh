@@ -892,6 +892,254 @@ export -f supervise_daemon _do_graceful_shutdown _on_trap_signal
 # daemon fail with "address already in use").
 sweep_stray_processes quick
 
+
+# -----------------------------------------------------------------------------
+# ProjectBW: Ежедневный бекап MySQL/MariaDB в отдельный GitHub-репозиторий
+# -----------------------------------------------------------------------------
+MYSQL_BACKUP_ENABLED="${MYSQL_BACKUP_ENABLED:-0}"
+MYSQL_BACKUP_GITHUB_REPOSITORY="${MYSQL_BACKUP_GITHUB_REPOSITORY:-}"
+MYSQL_BACKUP_GITHUB_BRANCH="${MYSQL_BACKUP_GITHUB_BRANCH:-main}"
+MYSQL_BACKUP_GITHUB_TOKEN="${MYSQL_BACKUP_GITHUB_TOKEN:-}"
+MYSQL_BACKUP_TIME="${MYSQL_BACKUP_TIME:-04:00}"
+MYSQL_BACKUP_PATH="${MYSQL_BACKUP_PATH:-backups/mysql}"
+MYSQL_BACKUP_DATABASES="${MYSQL_BACKUP_DATABASES:-all}"
+MYSQL_BACKUP_KEEP_LOCAL="${MYSQL_BACKUP_KEEP_LOCAL:-3}"
+MYSQL_BACKUP_MAX_SIZE_MB="${MYSQL_BACKUP_MAX_SIZE_MB:-95}"
+
+mysql_backup_log() { printf '[Бекап MySQL] %s\n' "$*"; }
+mysql_backup_error() { printf '[Бекап MySQL] ОШИБКА: %s\n' "$*" >&2; }
+
+mysql_backup_seconds_until() {
+    local now target today target_epoch
+    now=$(date +%s)
+    target="${MYSQL_BACKUP_TIME}"
+    printf '%s\n' "${target}" | grep -Eq '^[0-2][0-9]:[0-5][0-9] ------------------------------------------------------
+case "${PROJECT_TYPE}" in
+    mariadb|mysql)
+        init_mariadb_mysql
+        print_connection_guide
+        start_mariadb_mysql
+        ;;
+    postgresql|postgres)
+        init_postgres
+        print_connection_guide
+        start_postgres
+        ;;
+    redis|valkey|keydb|dragonfly|memcached)
+        init_redis_family
+        print_connection_guide
+        start_redis_family
+        ;;
+    mongodb|mongo|ferretdb)
+        init_mongo_family
+        print_connection_guide
+        start_mongo_family
+        ;;
+    surrealdb|rethinkdb)
+        init_surreal_family
+        print_connection_guide
+        start_surreal_family
+        ;;
+    cockroachdb|cockroach|tidb|dolt|sqld|libsql|etcd|nats|immudb|dgraph|arangodb|orientdb|ravendb|cassandra|aerospike|yugabytedb|yugabyte|kafka)
+        init_extra_engine
+        print_connection_guide
+        start_extra_engine
+        ;;
+    meilisearch|typesense|qdrant|elasticsearch|opensearch|solr|manticoresearch|manticore|milvus|weaviate|quickwit)
+        init_search_family
+        print_connection_guide
+        start_search_family
+        ;;
+    pocketbase|minio|influxdb|clickhouse|victoriametrics|couchdb|neo4j|questdb|seaweedfs|weed|garage|prometheus|consul|loki|sqlite)
+        init_storage_family
+        print_connection_guide
+        start_storage_family
+        ;;
+    custom)
+        print_connection_guide
+        mkdir -p "${SERVER_DIR}/bin" "${SERVER_DIR}/data" "${SERVER_DIR}/logs" "${SERVER_DIR}/config"
+
+        if [ -n "${CUSTOM_PRE_RUN_SCRIPT:-}" ]; then
+            log "Executing pre-run custom script..."
+            eval "${CUSTOM_PRE_RUN_SCRIPT}"
+        fi
+
+        if [ -n "${CUSTOM_DOWNLOAD_URL:-}" ] && [ ! -f "${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME:-app}" ]; then
+            log "Downloading custom binary from ${CUSTOM_DOWNLOAD_URL}..."
+            "${SERVER_DIR}/scripts/install-db-version.sh" "custom" "${CUSTOM_DOWNLOAD_URL}" "${SERVER_DIR}/bin" || true
+        fi
+
+        run_cmd="${CUSTOM_COMMAND:-${CUSTOM_STARTUP_CMD:-}}"
+        if [ -z "${run_cmd}" ]; then
+            if [ -n "${CUSTOM_BINARY_NAME:-}" ] && [ -x "${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME}" ]; then
+                run_cmd="${SERVER_DIR}/bin/${CUSTOM_BINARY_NAME} ${CUSTOM_ARGS:-}"
+            elif [ -x "${SERVER_DIR}/bin/server" ]; then
+                run_cmd="${SERVER_DIR}/bin/server ${CUSTOM_ARGS:-}"
+            elif [ -x "${SERVER_DIR}/server" ]; then
+                run_cmd="${SERVER_DIR}/server ${CUSTOM_ARGS:-}"
+            fi
+        fi
+
+        if [ -n "${run_cmd}" ]; then
+            log "Starting Custom Engine: ${run_cmd}"
+            # eval (in a subshell) so quoted/complex commands survive intact;
+            # the subshell PID becomes the supervised daemon.
+            ( eval "${run_cmd}" ) < /dev/null &
+            daemon_pid=$!
+            supervise_daemon "${daemon_pid}"
+        else
+            fail "CUSTOM_COMMAND or CUSTOM_BINARY_NAME is empty. Provide a valid command or binary to run."
+        fi
+        ;;
+    *)
+        fail "Unsupported database engine: '${PROJECT_TYPE}'"
+        ;;
+esac
+ || target="04:00"
+    today=$(date +%Y-%m-%d)
+    target_epoch=$(date -d "${today} ${target}:00" +%s 2>/dev/null || echo 0)
+    if [ "${target_epoch}" -le "${now}" ]; then
+        target_epoch=$(date -d "${today} +1 day ${target}:00" +%s 2>/dev/null || echo 0)
+    fi
+    [ "${target_epoch}" -gt "${now}" ] 2>/dev/null || target_epoch=$((now + 60))
+    printf '%s\n' $((target_epoch - now))
+}
+
+mysql_backup_run() {
+    [ "${MYSQL_BACKUP_ENABLED}" = "1" ] || return 0
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
+
+    [ -n "${MYSQL_BACKUP_GITHUB_REPOSITORY}" ] || {
+        mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_REPOSITORY."
+        return 1
+    }
+    [ -n "${MYSQL_BACKUP_GITHUB_TOKEN}" ] || {
+        mysql_backup_error "Не задан MYSQL_BACKUP_GITHUB_TOKEN."
+        return 1
+    }
+    command -v mysqldump >/dev/null 2>&1 || { mysql_backup_error "Не найден mysqldump."; return 1; }
+    command -v curl >/dev/null 2>&1 || { mysql_backup_error "Не найден curl."; return 1; }
+    command -v gzip >/dev/null 2>&1 || { mysql_backup_error "Не найден gzip."; return 1; }
+
+    local workdir="${SERVER_DIR:-/home/container}/.mysql-backups"
+    mkdir -p "${workdir}" 2>/dev/null || return 1
+    chmod 700 "${workdir}" 2>/dev/null || true
+
+    local client_cnf="${workdir}/client.cnf"
+    umask 077
+    cat > "${client_cnf}" <<CNF
+[client]
+user=root
+password=${DB_ROOT_PASSWORD}
+host=127.0.0.1
+port=${SERVER_PORT:-3306}
+CNF
+    chmod 600 "${client_cnf}"
+
+    local timestamp archive databases dump_rc size max_bytes repo path api json_tmp http_code
+    timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+    archive="${workdir}/mysql-${timestamp}.sql.gz"
+    mysql_backup_log "Создание резервной копии (${MYSQL_BACKUP_DATABASES})..."
+
+    if [ "${MYSQL_BACKUP_DATABASES}" = "all" ] || [ -z "${MYSQL_BACKUP_DATABASES}" ]; then
+        mysqldump --defaults-extra-file="${client_cnf}" \
+            --all-databases --single-transaction --routines --events --triggers --hex-blob \
+            2>/dev/null | gzip -9 > "${archive}"
+        dump_rc=${PIPESTATUS[0]}
+    else
+        databases=$(printf '%s' "${MYSQL_BACKUP_DATABASES}" | tr ',' ' ')
+        # Список баз задаётся администратором сервера; значения не берутся из сети.
+        mysqldump --defaults-extra-file="${client_cnf}" \
+            --databases ${databases} --single-transaction --routines --events --triggers --hex-blob \
+            2>/dev/null | gzip -9 > "${archive}"
+        dump_rc=${PIPESTATUS[0]}
+    fi
+    rm -f "${client_cnf}" 2>/dev/null || true
+
+    if [ "${dump_rc}" -ne 0 ] || [ ! -s "${archive}" ]; then
+        mysql_backup_error "mysqldump завершился с ошибкой (код ${dump_rc})."
+        rm -f "${archive}" 2>/dev/null || true
+        return 1
+    fi
+
+    size=$(wc -c < "${archive}" 2>/dev/null || echo 0)
+    max_bytes=$((MYSQL_BACKUP_MAX_SIZE_MB * 1024 * 1024))
+    if [ "${size}" -gt "${max_bytes}" ]; then
+        mysql_backup_error "Сжатый дамп больше лимита ${MYSQL_BACKUP_MAX_SIZE_MB} МБ."
+        mysql_backup_error "GitHub не принимает Git-объекты больше 100 МБ; используйте Git LFS или другое хранилище для больших БД."
+        return 1
+    fi
+
+    repo="${MYSQL_BACKUP_GITHUB_REPOSITORY#https://github.com/}"
+    repo="${repo#http://github.com/}"
+    repo="${repo%.git}"
+    case "${repo}" in */*) ;; *) mysql_backup_error "MYSQL_BACKUP_GITHUB_REPOSITORY должен быть owner/repository."; return 1 ;; esac
+
+    path="${MYSQL_BACKUP_PATH%/}/$(basename "${archive}")"
+    path="${path#/}"
+    api="https://api.github.com/repos/${repo}/contents/${path}"
+    json_tmp=$(mktemp "${workdir}/.github-upload.XXXXXX") || return 1
+    chmod 600 "${json_tmp}"
+
+    {
+        printf '{"message":"Ежедневный бекап MySQL/MariaDB %s","branch":"%s","content":"' "$(date '+%Y-%m-%d %H:%M:%S')" "${MYSQL_BACKUP_GITHUB_BRANCH}"
+        base64 -w 0 "${archive}" 2>/dev/null || base64 "${archive}" | tr -d '\n'
+        printf '"}'
+    } > "${json_tmp}"
+
+    mysql_backup_log "Загрузка в GitHub: ${repo}/${path}..."
+    http_code=$(curl -sS --retry 3 --max-time 900 \
+        -o "${workdir}/github-response.txt" -w '%{http_code}' -X PUT \
+        -H 'Accept: application/vnd.github+json' \
+        -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
+        -H 'X-GitHub-Api-Version: 2026-03-10' \
+        -H 'Content-Type: application/json' \
+        --data-binary @"${json_tmp}" "${api}" 2>/dev/null || echo 000)
+
+    rm -f "${json_tmp}" 2>/dev/null || true
+
+    case "${http_code}" in
+        200|201)
+            mysql_backup_log "Бекап успешно загружен: ${path}"
+            rm -f "${workdir}/github-response.txt" "${archive}" 2>/dev/null || true
+            ;;
+        *)
+            mysql_backup_error "GitHub вернул HTTP ${http_code}. Дамп сохранён локально: ${archive}"
+            if [ -s "${workdir}/github-response.txt" ]; then
+                head -c 1000 "${workdir}/github-response.txt" >&2
+                printf '\n' >&2
+            fi
+            return 1
+            ;;
+    esac
+
+    # Оставляем несколько последних локальных копий как аварийный запас.
+    if [ "${MYSQL_BACKUP_KEEP_LOCAL}" -ge 0 ] 2>/dev/null; then
+        find "${workdir}" -maxdepth 1 -type f -name 'mysql-*.sql.gz' -printf '%T@ %p\n' 2>/dev/null |
+            sort -nr | tail -n +$((MYSQL_BACKUP_KEEP_LOCAL + 1)) |
+            cut -d' ' -f2- | xargs -r rm -f 2>/dev/null || true
+    fi
+    return 0
+}
+
+mysql_backup_scheduler() {
+    [ "${MYSQL_BACKUP_ENABLED}" = "1" ] || return 0
+    case "${PROJECT_TYPE:-}" in mariadb|mysql) ;; *) return 0 ;; esac
+    (
+        while true; do
+            local wait_seconds
+            wait_seconds=$(mysql_backup_seconds_until)
+            mysql_backup_log "Следующий бекап: ${MYSQL_BACKUP_TIME} (через ${wait_seconds} сек., TZ=${TZ:-UTC})."
+            sleep "${wait_seconds}"
+            mysql_backup_run || true
+            sleep 65
+        done
+    ) &
+    MYSQL_BACKUP_PID=$!
+    export MYSQL_BACKUP_PID
+    mysql_backup_log "Ежедневный бекап включён: ${MYSQL_BACKUP_TIME}; GitHub: ${MYSQL_BACKUP_GITHUB_REPOSITORY}."
+}
+
 # --- Engine Dispatcher ------------------------------------------------------
 case "${PROJECT_TYPE}" in
     mariadb|mysql)
