@@ -716,6 +716,12 @@ _do_graceful_shutdown() {
     printf "\n"
     log "Shutdown event (${sig}) received. Gracefully stopping ${PROJECT_TYPE^^}..."
 
+    # Остановить планировщик ежедневных бекапов
+    if [ -n "${MYSQL_BACKUP_PID:-}" ] && kill -0 "${MYSQL_BACKUP_PID}" 2>/dev/null; then
+        kill -TERM "${MYSQL_BACKUP_PID}" 2>/dev/null || true
+        MYSQL_BACKUP_PID=""
+    fi
+
     # Terminate the Git Auto-Update watcher immediately
     if [ -n "${GIT_AUTO_UPDATE_PID:-}" ] && kill -0 "${GIT_AUTO_UPDATE_PID}" 2>/dev/null; then
         kill -9 "${GIT_AUTO_UPDATE_PID}" 2>/dev/null || true
@@ -905,6 +911,8 @@ MYSQL_BACKUP_PATH="${MYSQL_BACKUP_PATH:-backups/mysql}"
 MYSQL_BACKUP_DATABASES="${MYSQL_BACKUP_DATABASES:-all}"
 MYSQL_BACKUP_KEEP_LOCAL="${MYSQL_BACKUP_KEEP_LOCAL:-3}"
 MYSQL_BACKUP_MAX_SIZE_MB="${MYSQL_BACKUP_MAX_SIZE_MB:-95}"
+case "${MYSQL_BACKUP_KEEP_LOCAL}" in ''|*[!0-9]*) MYSQL_BACKUP_KEEP_LOCAL=3 ;; esac
+case "${MYSQL_BACKUP_MAX_SIZE_MB}" in ''|*[!0-9]*) MYSQL_BACKUP_MAX_SIZE_MB=95 ;; esac
 
 mysql_backup_log() { printf '[Бекап MySQL] %s\n' "$*"; }
 mysql_backup_error() { printf '[Бекап MySQL] ОШИБКА: %s\n' "$*" >&2; }
@@ -1131,7 +1139,16 @@ mysql_backup_scheduler() {
             wait_seconds=$(mysql_backup_seconds_until)
             mysql_backup_log "Следующий бекап: ${MYSQL_BACKUP_TIME} (через ${wait_seconds} сек., TZ=${TZ:-UTC})."
             sleep "${wait_seconds}"
-            mysql_backup_run || true
+            # После 04:00 делаем до 10 попыток: база или GitHub могут ещё запускаться.
+            local attempt=1
+            while [ "${attempt}" -le 10 ]; do
+                if mysql_backup_run; then
+                    break
+                fi
+                [ "${attempt}" -lt 10 ] || break
+                sleep 60
+                attempt=$((attempt + 1))
+            done
             sleep 65
         done
     ) &
