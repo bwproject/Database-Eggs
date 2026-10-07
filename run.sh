@@ -851,9 +851,9 @@ supervise_daemon() {
                                                 if declare -F mysql_backup_run >/dev/null 2>&1; then
                                                     (
                                                         if mysql_backup_run; then
-                                                            mysql_backup_log "Ручной бекап по команде 'backup' завершён успешно."
+                                                            mysql_backup_log "Ручной бекап по команде 'backup' подтверждён GitHub API и завершён успешно."
                                                         else
-                                                            mysql_backup_error "Ручной бекап по команде 'backup' завершился ошибкой."
+                                                            mysql_backup_error "Ручной бекап по команде 'backup' завершился ошибкой. Лог: ${MYSQL_BACKUP_LOG_FILE:-${SERVER_DIR}/.mysql-backups/backup.log}"
                                                         fi
                                                     ) &
                                                 else
@@ -1018,8 +1018,21 @@ MYSQL_BACKUP_MAX_SIZE_MB="${MYSQL_BACKUP_MAX_SIZE_MB:-95}"
 
 case "${MYSQL_BACKUP_KEEP_LOCAL}" in ''|*[!0-9]*) MYSQL_BACKUP_KEEP_LOCAL=3 ;; esac
 
-mysql_backup_log() { printf '[Бекап MySQL] %s\n' "$*"; }
-mysql_backup_error() { printf '[Бекап MySQL] ОШИБКА: %s\n' "$*" >&2; }
+MYSQL_BACKUP_LOG_FILE=""
+mysql_backup_log() {
+    local msg="[Бекап MySQL] ${*}"
+    printf "%s\n" "${msg}"
+    if [ -n "${MYSQL_BACKUP_LOG_FILE:-}" ]; then
+        printf "[%s] %s\n" "§(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
+    fi
+}
+mysql_backup_error() {
+    local msg="[Бекап MySQL] ОШИБКА: ${*}"
+    printf "%s\n" "${msg}" >&2
+    if [ -n "${MYSQL_BACKUP_LOG_FILE:-}" ]; then
+        printf "[%s] %s\n" "§(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
+    fi
+}
 
 mysql_backup_seconds_until() {
     local now target today target_epoch
@@ -1051,6 +1064,14 @@ mysql_backup_run() {
     local workdir="${SERVER_DIR:-/home/container}/.mysql-backups"
     mkdir -p "${workdir}" 2>/dev/null || { mysql_backup_error "Не удалось создать временную папку."; return 1; }
     chmod 700 "${workdir}" 2>/dev/null || true
+    MYSQL_BACKUP_LOG_FILE="${workdir}/backup.log"
+    export MYSQL_BACKUP_LOG_FILE
+    mysql_backup_log "============================================================"
+    mysql_backup_log "Запуск бекапа: §(date '+%Y-%m-%d %H:%M:%S %Z')"
+    mysql_backup_log "Репозиторий: ${MYSQL_BACKUP_GITHUB_REPOSITORY}"
+    mysql_backup_log "Ветка: ${MYSQL_BACKUP_GITHUB_BRANCH}"
+    mysql_backup_log "Путь: ${MYSQL_BACKUP_PATH}"
+    mysql_backup_log "Локальная папка: ${workdir}"
 
     local client_cnf="${workdir}/client.cnf"
     umask 077
@@ -1156,13 +1177,32 @@ CNF
             -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             -H 'Content-Type: application/json' \
-            --data-binary @"${json_tmp}" "${api}" 2>/dev/null || echo 000)
+            --data-binary @"${json_tmp}" "${api}" 2>"${workdir}/curl-error.txt" || echo 000)
 
         rm -f "${json_tmp}" 2>/dev/null || true
+        mysql_backup_log "GitHub PUT: HTTP=${http_code:-000}"
+        if [ -s "${workdir}/curl-error.txt" ]; then
+            mysql_backup_error "curl: §(head -c 2000 "${workdir}/curl-error.txt")"
+        fi
 
         case "${http_code}" in
             200|201)
                 mysql_backup_log "Файл ${current_no}/${part_count} успешно загружен."
+                verify_code=§(curl -sS --retry 2 --max-time 60 -o "${workdir}/github-verify.txt" -w '%{http_code}' -G \
+                    -H 'Accept: application/vnd.github+json' \
+                    -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
+                    -H 'X-GitHub-Api-Version: 2026-03-10' \
+                    --data-urlencode "ref=${MYSQL_BACKUP_GITHUB_BRANCH}" \
+                    "https://api.github.com/repos/${repo}/contents/${path}" 2>"${workdir}/github-verify-error.txt")
+                mysql_backup_log "Проверка файла в GitHub: HTTP=${verify_code:-000}"
+                if [ "${verify_code}" = "200" ]; then
+                    mysql_backup_log "ПРОВЕРЕНО: файл реально существует: ${repo}/${path} (ветка ${MYSQL_BACKUP_GITHUB_BRANCH})."
+                else
+                    mysql_backup_error "PUT прошёл, но проверка файла не удалась: HTTP=${verify_code:-000}"
+                    [ -s "${workdir}/github-verify.txt" ] && head -c 3000 "${workdir}/github-verify.txt" >&2 && printf '\n' >&2
+                    [ -s "${workdir}/github-verify-error.txt" ] && head -c 2000 "${workdir}/github-verify-error.txt" >&2 && printf '\n' >&2
+                    return 1
+                fi
                 ;;
             *)
                 mysql_backup_error "GitHub вернул HTTP ${http_code}. Файл оставлен локально для повторной загрузки: ${part}"
@@ -1183,6 +1223,8 @@ CNF
     fi
 
     mysql_backup_log "Полный бекап ${timestamp} успешно загружен в ${repo}/${backup_dir}."
+    mysql_backup_log "ПРОВЕРКА ЗАВЕРШЕНА: все ${part_count} файл(а) найдены через GitHub API."
+    mysql_backup_log "Лог бекапа: ${MYSQL_BACKUP_LOG_FILE}"
     return 0
 }
 
