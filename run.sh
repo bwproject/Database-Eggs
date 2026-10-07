@@ -918,6 +918,92 @@ sweep_stray_processes quick
 
 
 # -----------------------------------------------------------------------------
+# ProjectBW: Встроенный phpMyAdmin для MySQL/MariaDB
+# -----------------------------------------------------------------------------
+PHPMYADMIN_ENABLED="${PHPMYADMIN_ENABLED:-1}"
+PHPMYADMIN_PORT="${PHPMYADMIN_PORT:-8080}"
+
+setup_phpmyadmin() {
+    [ "$PHPMYADMIN_ENABLED" = "1" ] || return 0
+    case "$PROJECT_TYPE" in mariadb|mysql) ;; *) return 0 ;; esac
+
+    case "$PHPMYADMIN_PORT" in ''|*[!0-9]*) PHPMYADMIN_PORT=8080 ;; esac
+    if [ "$PHPMYADMIN_PORT" -lt 1024 ] || [ "$PHPMYADMIN_PORT" -gt 65535 ]; then
+        warn "Некорректный PHPMYADMIN_PORT='$PHPMYADMIN_PORT'. Используем 8080."
+        PHPMYADMIN_PORT=8080
+    fi
+
+    if ! command -v apache2ctl >/dev/null 2>&1 || [ ! -d /usr/share/phpmyadmin ]; then
+        if ! command -v apt-get >/dev/null 2>&1; then
+            error "Для встроенного phpMyAdmin требуется apt-get/совместимый Debian-based Docker image."
+            return 1
+        fi
+
+        log "Устанавливаем phpMyAdmin и Apache внутри контейнера..."
+        export DEBIAN_FRONTEND=noninteractive
+        if command -v debconf-set-selections >/dev/null 2>&1; then
+            printf '%s\n' \
+                'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2' \
+                'phpmyadmin phpmyadmin/dbconfig-install boolean false' | debconf-set-selections 2>/dev/null || true
+        fi
+        apt-get update -qq >/dev/null 2>&1 || true
+        if ! apt-get install -y -qq --no-install-recommends \
+            apache2 php php-cli php-mysql php-mbstring php-zip php-gd php-curl php-xml phpmyadmin >/dev/null 2>&1; then
+            error "Не удалось установить phpMyAdmin. База данных продолжит запуск без веб-интерфейса."
+            unset DEBIAN_FRONTEND
+            return 1
+        fi
+        unset DEBIAN_FRONTEND
+    fi
+
+    mkdir -p /etc/phpmyadmin /etc/apache2/sites-available /var/log/apache2 2>/dev/null || true
+    cat > /etc/phpmyadmin/config.user.inc.php <<PHP
+<?php
+\$cfg['Servers'][1]['host'] = '127.0.0.1';
+\$cfg['Servers'][1]['port'] = (int) '${SERVER_PORT:-3306}';
+\$cfg['Servers'][1]['auth_type'] = 'cookie';
+PHP
+    chmod 644 /etc/phpmyadmin/config.user.inc.php 2>/dev/null || true
+
+    if [ -f /etc/apache2/ports.conf ]; then
+        sed -i -E 's/^[[:space:]]*Listen[[:space:]]+[0-9]+/Listen '"$PHPMYADMIN_PORT"'/' /etc/apache2/ports.conf 2>/dev/null || true
+        grep -q "^Listen $PHPMYADMIN_PORT$" /etc/apache2/ports.conf 2>/dev/null || printf 'Listen %s\n' "$PHPMYADMIN_PORT" >> /etc/apache2/ports.conf
+    fi
+
+    a2dissite 000-default.conf >/dev/null 2>&1 || true
+    cat > /etc/apache2/sites-available/phpmyadmin-pterodactyl.conf <<APACHE
+<VirtualHost *:$PHPMYADMIN_PORT>
+    ServerName localhost
+    DocumentRoot /usr/share/phpmyadmin
+    <Directory /usr/share/phpmyadmin>
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        AllowOverride All
+        Require all granted
+    </Directory>
+    ErrorLog /var/log/apache2/phpmyadmin-error.log
+    CustomLog /var/log/apache2/phpmyadmin-access.log combined
+</VirtualHost>
+APACHE
+    a2ensite phpmyadmin-pterodactyl.conf >/dev/null 2>&1 || true
+
+    if ! apache2ctl configtest >/dev/null 2>&1; then
+        error "Конфигурация Apache/phpMyAdmin содержит ошибку. Веб-интерфейс не запущен."
+        return 1
+    fi
+
+    apache2ctl -k stop >/dev/null 2>&1 || true
+    if apache2ctl -k start >/dev/null 2>&1; then
+        ok "phpMyAdmin запущен: http://0.0.0.0:$PHPMYADMIN_PORT/"
+        log "phpMyAdmin подключён к MySQL/MariaDB на порту @@DB_PORT@@"
+    else
+        error "Не удалось запустить Apache/phpMyAdmin на порту $PHPMYADMIN_PORT."
+        return 1
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # ProjectBW: Ежедневный полный бекап MySQL/MariaDB в GitHub
 # -----------------------------------------------------------------------------
 MYSQL_BACKUP_ENABLED="${MYSQL_BACKUP_ENABLED:-0}"
@@ -1238,6 +1324,7 @@ case "${PROJECT_TYPE}" in
     mariadb|mysql)
         init_mariadb_mysql
         print_connection_guide
+        setup_phpmyadmin || true
         start_mariadb_mysql
         ;;
     postgresql|postgres)
