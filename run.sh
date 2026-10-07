@@ -1023,14 +1023,14 @@ mysql_backup_log() {
     local msg="[Бекап MySQL] ${*}"
     printf "%s\n" "${msg}"
     if [ -n "${MYSQL_BACKUP_LOG_FILE:-}" ]; then
-        printf "[%s] %s\n" "§(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
+        printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
     fi
 }
 mysql_backup_error() {
     local msg="[Бекап MySQL] ОШИБКА: ${*}"
     printf "%s\n" "${msg}" >&2
     if [ -n "${MYSQL_BACKUP_LOG_FILE:-}" ]; then
-        printf "[%s] %s\n" "§(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
+        printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S %Z')" "${msg}" >> "${MYSQL_BACKUP_LOG_FILE}" 2>/dev/null || true
     fi
 }
 
@@ -1067,7 +1067,7 @@ mysql_backup_run() {
     MYSQL_BACKUP_LOG_FILE="${workdir}/backup.log"
     export MYSQL_BACKUP_LOG_FILE
     mysql_backup_log "============================================================"
-    mysql_backup_log "Запуск бекапа: §(date '+%Y-%m-%d %H:%M:%S %Z')"
+    mysql_backup_log "Запуск бекапа: $(date '+%Y-%m-%d %H:%M:%S %Z')"
     mysql_backup_log "Репозиторий: ${MYSQL_BACKUP_GITHUB_REPOSITORY}"
     mysql_backup_log "Ветка: ${MYSQL_BACKUP_GITHUB_BRANCH}"
     mysql_backup_log "Путь: ${MYSQL_BACKUP_PATH}"
@@ -1182,13 +1182,13 @@ CNF
         rm -f "${json_tmp}" 2>/dev/null || true
         mysql_backup_log "GitHub PUT: HTTP=${http_code:-000}"
         if [ -s "${workdir}/curl-error.txt" ]; then
-            mysql_backup_error "curl: §(head -c 2000 "${workdir}/curl-error.txt")"
+            mysql_backup_error "curl: $(head -c 2000 "${workdir}/curl-error.txt")"
         fi
 
         case "${http_code}" in
             200|201)
                 mysql_backup_log "Файл ${current_no}/${part_count} успешно загружен."
-                verify_code=§(curl -sS --retry 2 --max-time 60 -o "${workdir}/github-verify.txt" -w '%{http_code}' -G \
+                verify_code=$(curl -sS --retry 2 --max-time 60 -o "${workdir}/github-verify.txt" -w '%{http_code}' -G \
                     -H 'Accept: application/vnd.github+json' \
                     -H "Authorization: Bearer ${MYSQL_BACKUP_GITHUB_TOKEN}" \
                     -H 'X-GitHub-Api-Version: 2026-03-10' \
