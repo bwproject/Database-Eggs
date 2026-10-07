@@ -31,6 +31,16 @@
   },
   "variables": [
     {
+      "name": "Часовой пояс контейнера",
+      "description": "Часовой пояс контейнера. Используется в том числе для определения времени ежедневного бекапа MySQL/MariaDB. Например: Asia/Yekaterinburg.",
+      "env_variable": "TZ",
+      "default_value": "Asia/Yekaterinburg",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:64",
+      "field_type": "text"
+    },
+    {
       "name": "Тип базы данных",
       "description": "Движок базы данных, который будет запущен. Поддерживаются MariaDB, MySQL, PostgreSQL, Redis, MongoDB, PostgreSQL и другие движки из универсального runtime.",
       "env_variable": "DATABASE_TYPE",
