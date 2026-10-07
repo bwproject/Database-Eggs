@@ -1315,29 +1315,50 @@ mysql_backup_restore() {
     fi
 
     python3 - "${list_file}" "${file_part}" > "${items_file}" <<'PY'
-import json, sys
+import json, sys, re
 p, wanted = sys.argv[1], sys.argv[2]
 try:
     data = json.load(open(p, encoding="utf-8"))
 except Exception as e:
     print(f"ERROR\t{e}")
     raise SystemExit(2)
+
 if isinstance(data, dict):
     data = [data]
-rows = []
+
+files = []
 for x in data:
     name = x.get("name", "")
     url = x.get("download_url", "")
-    if (name.endswith(".sql.gz") or (".part-" in name and name.endswith(".gz"))) and (not wanted or name == wanted):
-        rows.append((name, url))
-for name, url in sorted(rows):
+    if (name.endswith(".sql.gz") or (".part-" in name and name.endswith(".gz"))) and url:
+        files.append((name, url))
+
+def backup_prefix(name):
+    m = re.match(r"^(mysql-[0-9]{2}\.[0-9]{2}\.[0-9]{4}_[0-9]{2}-[0-9]{2}-[0-9]{2})(?:\.part-[0-9]{3}-[0-9]{3})?\.gz$", name)
+    if m:
+        return m.group(1)
+    m = re.match(r"^(mysql-[0-9]{2}\.[0-9]{2}\.[0-9]{4}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.sql\.gz$", name)
+    return m.group(1) if m else ""
+
+if wanted:
+    # A part filename means "restore the complete backup set", not just one part.
+    prefix = backup_prefix(wanted)
+    selected = [(n, u) for n, u in files if backup_prefix(n) == prefix] if prefix else [(n, u) for n, u in files if n == wanted]
+else:
+    prefixes = sorted({backup_prefix(n) for n, _ in files if backup_prefix(n)})
+    prefix = prefixes[-1] if prefixes else ""
+    selected = [(n, u) for n, u in files if backup_prefix(n) == prefix] if prefix else []
+
+selected.sort(key=lambda x: x[0])
+for name, url in selected:
     print(name + "\t" + url)
-if wanted and not rows:
+
+if not selected:
     raise SystemExit(3)
 PY
     local py_rc=$?
     if [ "${py_rc}" -ne 0 ]; then
-        mysql_backup_error "В выбранной папке не найден указанный backup-файл."
+        mysql_backup_error "В выбранной папке не найден backup или указанное имя файла."
         rm -rf "${restore_dir}"
         return 1
     fi
@@ -1350,23 +1371,8 @@ PY
         return 1
     }
 
-    local selected_names="${restore_dir}/selected.txt"
-    : > "${selected_names}"
-    if [ -n "${file_part}" ]; then
-        awk -F '\t' '{print $1}' "${items_file}" > "${selected_names}"
-    else
-        local first_name
-        first_name=$(head -n 1 "${items_file}" | cut -f1)
-        if [[ "${first_name}" == *".part-"* ]]; then
-            local set_prefix
-            set_prefix="${first_name%%.part-*}"
-            awk -F '\t' -v p="${set_prefix}" '$1 ~ ("^" p "\\.part-[0-9]{3}-[0-9]{3}\\.gz$") {print $1}' "${items_file}" > "${selected_names}"
-        else
-            printf '%s\n' "${first_name}" > "${selected_names}"
-        fi
-    fi
-
-    count=$(wc -l < "${selected_names}" 2>/dev/null || echo 0)
+    local count
+    count=$(wc -l < "${items_file}" 2>/dev/null || echo 0)
     [ "${count}" -gt 0 ] || {
         mysql_backup_error "Не удалось определить набор файлов для восстановления."
         rm -rf "${restore_dir}"
