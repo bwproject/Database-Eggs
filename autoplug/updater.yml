@@ -1,0 +1,29 @@
+# ProjectBW AutoPlug updater configuration.
+# This file is prepared during installation and is not modified at server startup.
+
+updater:
+  self-updater:
+    enable: true
+    build: stable
+
+  java-updater:
+    enable: false
+    profile: AUTOMATIC
+    version:
+
+  server-updater:
+    enable: true
+    profile: AUTOMATIC
+    software:
+    version:
+
+  plugins-updater:
+    enable: true
+    profile: AUTOMATIC
+
+  mods-updater:
+    enable: true
+    profile: AUTOMATIC
+    version:
+
+  global-cool-down: 0
