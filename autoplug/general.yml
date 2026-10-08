@@ -1,0 +1,26 @@
+# ProjectBW AutoPlug base configuration.
+# This file is prepared during installation and is not modified at server startup.
+
+general:
+  autoplug:
+    auto-stop: false
+    start-on-boot: false
+    target-software: MINECRAFT_SERVER
+    system-tray:
+      enable: false
+      theme: light
+
+  server:
+    key: INSERT_KEY_HERE
+    auto-start: true
+    auto-eula: true
+    start-command: REPLACE-ME
+    stop-command: stop
+    restart-on-crash: true
+
+  directory-cleaner:
+    enabled: true
+    max-days: 7
+    list:
+      - true ./autoplug/logs
+      - ./autoplug/downloads
