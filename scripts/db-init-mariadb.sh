@@ -40,36 +40,38 @@ DB_RUNTIME_GID="${DB_RUNTIME_GID:-988}"
 
 ensure_db_runtime_user() {
     local uid="${DB_RUNTIME_UID}" gid="${DB_RUNTIME_GID}"
+    local current_uid current_gid
+    current_uid="$(id -u 2>/dev/null || echo '')"
+    current_gid="$(id -g 2>/dev/null || echo '')"
+
+    # Pelican/Pterodactyl may force the container to run under a numeric,
+    # non-root identity that differs from the image's default 988:988 and may
+    # not exist in /etc/passwd. In that case the process is already unprivileged:
+    # use its actual effective IDs rather than failing startup or attempting
+    # an impossible privilege switch.
+    if [ "${current_uid}" != "0" ] && [ -n "${current_uid}" ] && [ -n "${current_gid}" ]; then
+        DB_RUNTIME_UID="${current_uid}"
+        DB_RUNTIME_GID="${current_gid}"
+        export DB_RUNTIME_UID DB_RUNTIME_GID
+        return 0
+    fi
+
     if [ "${uid}" != "988" ] || [ "${gid}" != "988" ]; then
         # Custom UID/GID requested: refuse to mutate /etc/passwd for
         # system-reserved identities.
         [ "${uid}" -ge 1000 ] && [ "${gid}" -ge 1000 ] || return 1
     fi
     if ! getent passwd "${uid}" >/dev/null 2>&1; then
-        # The image chmods /etc/passwd 666; the `container` account (988)
-        # ships with the image, so this only fires for custom UIDs.
-        if [ -w /etc/group ]; then echo "dbuser:x:${gid}:" >> /etc/group 2>/dev/null || true; fi
+        # The image's container account normally ships with UID/GID 988.
+        # For custom IDs, add a matching entry when the filesystem permits it.
+        if [ -w /etc/group ] && ! getent group "${gid}" >/dev/null 2>&1; then
+            echo "dbuser:x:${gid}:" >> /etc/group 2>/dev/null || true
+        fi
         if [ -w /etc/passwd ]; then
             echo "dbuser:x:${uid}:${gid}:Database runtime user:${SERVER_DIR}:/bin/bash" >> /etc/passwd 2>/dev/null || true
         fi
     fi
-    if getent passwd "${uid}" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    # Pelican/Pterodactyl can force the container process to run as UID/GID
-    # 988 without providing a matching passwd entry in the image. In that
-    # case we cannot (and must not) try to switch identities: the daemon will
-    # remain under the already-unprivileged process identity. Accept this
-    # only when BOTH effective IDs exactly match the requested runtime IDs.
-    # This avoids falsely rejecting a safe non-root runtime merely because
-    # getent cannot resolve the numeric UID to a username.
-    local current_uid current_gid
-    current_uid="$(id -u 2>/dev/null || echo '')"
-    current_gid="$(id -g 2>/dev/null || echo '')"
-    [ "${current_uid}" = "${uid}" ] && [ "${current_gid}" = "${gid}" ] && return 0
-
-    return 1
+    getent passwd "${uid}" >/dev/null 2>&1
 }
 
 run_db_as_runtime_user() {
