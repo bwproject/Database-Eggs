@@ -28,4 +28,21 @@ RUN apt-get update \
     && chown -R 988:988 /opt/phpmyadmin \
     && chmod 700 /opt/phpmyadmin/tmp
 
+# The base image is pinned to the upstream runtime release, so explicitly
+# install this repository's current launcher and handlers into the image.
+# Without these COPY steps, editing run.sh/scripts only changes GitHub and
+# the published image keeps the old upstream runtime.
+COPY entrypoint.sh /entrypoint.sh
+COPY run.sh /usr/local/bin/run.sh
+COPY scripts/ /usr/local/bin/
+
+RUN sed -i 's/\r$//' /entrypoint.sh /usr/local/bin/run.sh /usr/local/bin/*.sh 2>/dev/null || true \
+    && chmod +x /entrypoint.sh /usr/local/bin/run.sh /usr/local/bin/*.sh 2>/dev/null || true \
+    && chown root:root /entrypoint.sh /usr/local/bin/run.sh /usr/local/bin/*.sh 2>/dev/null || true
+
+# The phpMyAdmin installation layer temporarily needs root; restore the
+# upstream runtime identity for normal database startup.
+USER container
+ENV USER=container HOME=/home/container
+
 EXPOSE 8080
