@@ -1,7 +1,9 @@
 # ProjectBW Multi-Database image with phpMyAdmin
 # Keeps the original PotenFYR database runtime and adds PHP CLI + phpMyAdmin.
 
-FROM ghcr.io/bwproject/database-eggs:sha-b64a0d2
+# Build from the maintained upstream runtime, not a previously published fork image.
+# This avoids stale/self-referential base layers when rebuilding this repository.
+FROM ghcr.io/potenfyr-studios/database-eggs:latest
 
 USER root
 
