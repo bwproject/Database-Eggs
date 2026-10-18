@@ -71,7 +71,18 @@ ensure_db_runtime_user() {
             echo "dbuser:x:${uid}:${gid}:Database runtime user:${SERVER_DIR}:/bin/bash" >> /etc/passwd 2>/dev/null || true
         fi
     fi
-    getent passwd "${uid}" >/dev/null 2>&1
+    if getent passwd "${uid}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Some Pelican runtimes mount /etc/passwd read-only or omit the numeric
+    # account. gosu/setpriv accept numeric IDs, so do not fail before MariaDB
+    # can start: it will still run under the requested non-root UID/GID.
+    if [ "$(id -u 2>/dev/null || echo 1)" = "0" ] &&
+       { command -v gosu >/dev/null 2>&1 || command -v setpriv >/dev/null 2>&1; }; then
+        return 0
+    fi
+    return 1
 }
 
 run_db_as_runtime_user() {
