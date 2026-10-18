@@ -53,7 +53,23 @@ ensure_db_runtime_user() {
             echo "dbuser:x:${uid}:${gid}:Database runtime user:${SERVER_DIR}:/bin/bash" >> /etc/passwd 2>/dev/null || true
         fi
     fi
-    getent passwd "${uid}" >/dev/null 2>&1 || return 1
+    if getent passwd "${uid}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Pelican/Pterodactyl can force the container process to run as UID/GID
+    # 988 without providing a matching passwd entry in the image. In that
+    # case we cannot (and must not) try to switch identities: the daemon will
+    # remain under the already-unprivileged process identity. Accept this
+    # only when BOTH effective IDs exactly match the requested runtime IDs.
+    # This avoids falsely rejecting a safe non-root runtime merely because
+    # getent cannot resolve the numeric UID to a username.
+    local current_uid current_gid
+    current_uid="$(id -u 2>/dev/null || echo '')"
+    current_gid="$(id -g 2>/dev/null || echo '')"
+    [ "${current_uid}" = "${uid}" ] && [ "${current_gid}" = "${gid}" ] && return 0
+
+    return 1
 }
 
 run_db_as_runtime_user() {
