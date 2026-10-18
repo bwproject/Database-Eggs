@@ -92,7 +92,20 @@ build_isolated_environment() {
     local bin_dir="${SERVER_DIR}/bin"
     local runtimes_dir="${SERVER_DIR}/.runtimes"
 
-    mkdir -p "${data_dir}" "${conf_dir}" "${log_dir}" "${run_dir}" "${bin_dir}" "${runtimes_dir}"
+    if ! mkdir -p "${data_dir}" "${conf_dir}" "${log_dir}" "${run_dir}" "${bin_dir}" "${runtimes_dir}"; then
+        printf '[launcher][error] Cannot create workspace directories under %s (UID=%s GID=%s). Check Pelican volume ownership and permissions.\n' "${SERVER_DIR}" "$(id -u 2>/dev/null || echo unknown)" "$(id -g 2>/dev/null || echo unknown)" >&2
+        return 1
+    fi
+
+    # When the egg starts as root, repair existing volume ownership before
+    # MariaDB creates version-specific data directories. Do not attempt chown
+    # as an unprivileged Pelican user; it would silently fail and hide the cause.
+    if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+        local runtime_uid="${DB_RUNTIME_UID:-988}"
+        local runtime_gid="${DB_RUNTIME_GID:-988}"
+        chown -R "${runtime_uid}:${runtime_gid}" "${data_dir}" "${log_dir}" "${run_dir}" 2>/dev/null || true
+    fi
+
     chmod 755 "${SERVER_DIR}" "${conf_dir}" "${log_dir}" "${bin_dir}" "${runtimes_dir}" 2>/dev/null || true
     chmod 700 "${data_dir}" "${run_dir}" 2>/dev/null || true
 }
@@ -1367,14 +1380,6 @@ PY
     count=$(wc -l < "${items_file}" 2>/dev/null || echo 0)
     [ "${count}" -gt 0 ] || {
         mysql_backup_error "В ${date_part} не найдено файлов бекапа."
-        rm -rf "${restore_dir}"
-        return 1
-    }
-
-    local count
-    count=$(wc -l < "${items_file}" 2>/dev/null || echo 0)
-    [ "${count}" -gt 0 ] || {
-        mysql_backup_error "Не удалось определить набор файлов для восстановления."
         rm -rf "${restore_dir}"
         return 1
     }
